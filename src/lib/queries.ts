@@ -213,12 +213,9 @@ export const logQueries = {
                 });
                 return res.data.data;
             },
-            refetchInterval: (query) => {
-                if (query.state.data) {
-                    return durationToMs(30, "seconds");
-                }
-                return false;
-            }
+            // Disabled automatic refetch - analytics queries are heavy and scan large tables
+            // Use manual refresh button instead to avoid 197GB+ disk reads over time
+            refetchInterval: false
         })
 };
 

@@ -49,27 +49,78 @@ const auditLogBuffer: Array<{
 
 const BATCH_SIZE = 100; // Write to DB every 100 logs
 const BATCH_INTERVAL_MS = 5000; // Or every 5 seconds, whichever comes first
+const MAX_BUFFER_SIZE = 500; // Safety valve - force flush if buffer exceeds this
 let flushTimer: NodeJS.Timeout | null = null;
 
+// Track failed flush attempts for monitoring
+let failedFlushCount = 0;
+
+// Buffer monitoring - logs buffer size every 30 seconds
+let monitoringInterval: NodeJS.Timeout | null = null;
+monitoringInterval = setInterval(() => {
+    const bufferSize = auditLogBuffer.length;
+    const estimatedMemoryKB = Math.round(bufferSize * 1.5);
+    // Always log to confirm monitoring is active (even when buffer is 0)
+    logger.debug(
+        `Audit buffer: ${bufferSize} items, ~${estimatedMemoryKB}KB, Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+    );
+    
+    // Safety valve: if buffer is too large, force flush
+    if (bufferSize > MAX_BUFFER_SIZE) {
+        logger.warn(`Audit buffer exceeded ${MAX_BUFFER_SIZE} items! Force flushing...`);
+        flushAuditLogs().catch((err) =>
+            logger.error("Error in force flush:", err)
+        );
+    }
+}, 30000);
+
 /**
- * Flush buffered logs to database
+ * Flush buffered logs to database with retry logic
  */
-async function flushAuditLogs() {
+async function flushAuditLogs(retryCount = 0, maxRetries = 3) {
     if (auditLogBuffer.length === 0) {
         return;
     }
 
     // Take all current logs and clear buffer
     const logsToWrite = auditLogBuffer.splice(0, auditLogBuffer.length);
+    const logCount = logsToWrite.length;
 
     try {
         // Batch insert all logs at once
         await db.insert(requestAuditLog).values(logsToWrite);
-        logger.debug(`Flushed ${logsToWrite.length} audit logs to database`);
+        logger.debug(`Flushed ${logCount} audit logs to database`);
+        
+        // Reset failed flush counter on success
+        if (failedFlushCount > 0) {
+            logger.info(`Audit log flushing recovered after ${failedFlushCount} failed attempts`);
+            failedFlushCount = 0;
+        }
     } catch (error) {
         logger.error("Error flushing audit logs:", error);
-        // On error, we lose these logs - consider a fallback strategy if needed
-        // (e.g., write to file, or put back in buffer with retry limit)
+        failedFlushCount++;
+        
+        // Retry with exponential backoff if we haven't exceeded max retries
+        if (retryCount < maxRetries) {
+            const backoffMs = Math.min(1000 * Math.pow(2, retryCount), 30000); // Max 30s backoff
+            logger.warn(`Retrying audit log flush in ${backoffMs}ms (attempt ${retryCount + 1}/${maxRetries})`);
+            
+            // Put logs back in buffer for retry
+            auditLogBuffer.unshift(...logsToWrite);
+            
+            // Retry after delay
+            setTimeout(() => {
+                flushAuditLogs(retryCount + 1, maxRetries).catch((err) => 
+                    logger.error("Error in audit log flush retry:", err)
+                );
+            }, backoffMs);
+        } else {
+            logger.error(`Failed to flush ${logCount} audit logs after ${maxRetries} retries - logs are lost`);
+            logger.warn(`Total failed flush attempts: ${failedFlushCount}`);
+        }
+    } finally {
+        // Explicitly clear the array to help garbage collection
+        logsToWrite.length = 0;
     }
 }
 
@@ -91,6 +142,10 @@ function scheduleFlush() {
  * Gracefully flush all pending logs (call this on shutdown)
  */
 export async function shutdownAuditLogger() {
+    if (monitoringInterval) {
+        clearInterval(monitoringInterval);
+        monitoringInterval = null;
+    }
     if (flushTimer) {
         clearTimeout(flushTimer);
         flushTimer = null;
@@ -233,13 +288,14 @@ export async function logRequestAudit(
             tls: body.tls
         });
 
-        // Flush immediately if buffer is full, otherwise schedule a flush
+        // Check if we should flush based on buffer size
         if (auditLogBuffer.length >= BATCH_SIZE) {
-            // Fire and forget - don't block the caller
+            // Flush immediately if buffer is full (batched write)
             flushAuditLogs().catch((err) =>
                 logger.error("Error flushing audit logs:", err)
             );
         } else {
+            // Normal case - schedule a flush after BATCH_INTERVAL_MS
             scheduleFlush();
         }
     } catch (error) {
