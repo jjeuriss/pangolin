@@ -43,6 +43,13 @@ import cache from "@server/lib/cache";
 import semver from "semver";
 import { APP_VERSION } from "@server/lib/consts";
 
+/**
+ * Deduplicate failed auth attempts to prevent logging spam from repeated requests
+ * Key format: "failedAuth:{resourceId}:{clientIp}"
+ * This prevents the same client making repeated failed attempts from creating thousands of audit logs
+ */
+const failedAuthAttemptCache = cache;
+
 const verifyResourceSessionSchema = z.object({
     sessions: z.record(z.string(), z.string()).optional(),
     headers: z.record(z.string(), z.string()).optional(),
@@ -75,6 +82,59 @@ export type VerifyUserResponse = {
     userData?: BasicUserData;
     pangolinVersion?: string;
 };
+
+/**
+ * Log failed auth attempts with deduplication to prevent spam logging
+ * Only logs the first attempt in a 10-second window for a given resource + IP combination
+ */
+function logFailedAuthAttemptDeduped(
+    resourceId: number | undefined,
+    orgId: string | undefined,
+    clientIp: string | undefined,
+    ipCC: string | undefined,
+    reason: number,
+    parsedBody: VerifyResourceSessionSchema
+) {
+    if (!resourceId || !orgId) {
+        // Always log if we don't have resource/org info
+        logRequestAudit(
+            {
+                action: false,
+                reason,
+                resourceId,
+                orgId,
+                location: ipCC
+            },
+            parsedBody
+        );
+        return;
+    }
+
+    // Create dedup key: "failedAuth:{resourceId}:{clientIp}:{reason}"
+    const dedupKey = `failedAuth:${resourceId}:${clientIp || "unknown"}:${reason}`;
+    const lastAttemptTime = failedAuthAttemptCache.get(dedupKey) as number | undefined;
+    const now = Date.now();
+
+    // Log this attempt if it's the first one or more than 10 seconds have passed
+    if (!lastAttemptTime || now - lastAttemptTime > 10000) {
+        failedAuthAttemptCache.set(dedupKey, now, 10); // Cache for 10 seconds
+
+        logRequestAudit(
+            {
+                action: false,
+                reason,
+                resourceId,
+                orgId,
+                location: ipCC
+            },
+            parsedBody
+        );
+    }
+}
+
+export type VerifyUserResponse = {
+    valid: boolean;
+    headerAuthChallenged?: boolean;
 
 export async function verifyResourceSession(
     req: Request,
@@ -454,14 +514,12 @@ export async function verifyResourceSession(
                 !resource.emailWhitelistEnabled &&
                 !headerAuthExtendedCompatibility?.extendedCompatibilityIsActivated
             ) {
-                logRequestAudit(
-                    {
-                        action: false,
-                        reason: 299, // no more auth methods
-                        resourceId: resource.resourceId,
-                        orgId: resource.orgId,
-                        location: ipCC
-                    },
+                logFailedAuthAttemptDeduped(
+                    resource.resourceId,
+                    resource.orgId,
+                    clientIp,
+                    ipCC,
+                    299, // no more auth methods
                     parsedBody.data
                 );
 
@@ -476,14 +534,12 @@ export async function verifyResourceSession(
                 !resource.emailWhitelistEnabled &&
                 !headerAuthExtendedCompatibility?.extendedCompatibilityIsActivated
             ) {
-                logRequestAudit(
-                    {
-                        action: false,
-                        reason: 299, // no more auth methods
-                        resourceId: resource.resourceId,
-                        orgId: resource.orgId,
-                        location: ipCC
-                    },
+                logFailedAuthAttemptDeduped(
+                    resource.resourceId,
+                    resource.orgId,
+                    clientIp,
+                    ipCC,
+                    299, // no more auth methods
                     parsedBody.data
                 );
 
@@ -725,14 +781,12 @@ export async function verifyResourceSession(
 
         logger.debug(`Redirecting to login at ${redirectPath}`);
 
-        logRequestAudit(
-            {
-                action: false,
-                reason: 299, // no more auth methods
-                resourceId: resource.resourceId,
-                orgId: resource.orgId,
-                location: ipCC
-            },
+        logFailedAuthAttemptDeduped(
+            resource.resourceId,
+            resource.orgId,
+            clientIp,
+            ipCC,
+            299, // no more auth methods
             parsedBody.data
         );
 
