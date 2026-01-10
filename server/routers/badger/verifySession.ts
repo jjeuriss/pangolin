@@ -132,10 +132,6 @@ function logFailedAuthAttemptDeduped(
     }
 }
 
-export type VerifyUserResponse = {
-    valid: boolean;
-    headerAuthChallenged?: boolean;
-
 export async function verifyResourceSession(
     req: Request,
     res: Response,
