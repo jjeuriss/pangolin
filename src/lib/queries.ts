@@ -205,6 +205,7 @@ export const logQueries = {
         queryOptions({
             queryKey: ["REQUEST_LOG_ANALYTICS", orgId, filters] as const,
             queryFn: async ({ signal, meta }) => {
+                console.log("[ANALYTICS] Fetching request analytics - auto-refetch DISABLED (code v2)");
                 const res = await meta!.api.get<
                     AxiosResponse<QueryRequestAnalyticsResponse>
                 >(`/org/${orgId}/logs/analytics`, {
