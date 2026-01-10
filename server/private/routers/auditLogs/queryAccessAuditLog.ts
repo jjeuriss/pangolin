@@ -25,6 +25,7 @@ import { QueryAccessAuditLogResponse } from "@server/routers/auditLogs/types";
 import response from "@server/lib/response";
 import logger from "@server/logger";
 import { getSevenDaysAgo } from "@app/lib/getSevenDaysAgo";
+import cache from "@server/lib/cache";
 
 export const queryAccessAuditLogsQuery = z.object({
     // iso string just validate its a parseable date
@@ -154,6 +155,24 @@ async function queryUniqueFilterAttributes(
     timeEnd: number,
     orgId: string
 ) {
+    // Cache key includes orgId and rounded time range (15-minute buckets)
+    const roundedStart = Math.floor(timeStart / 900) * 900;
+    const roundedEnd = Math.floor(timeEnd / 900) * 900;
+    const cacheKey = `accessFilterAttrs:${orgId}:${roundedStart}:${roundedEnd}`;
+
+    // Check cache first - these DISTINCT queries are expensive
+    const cached = cache.get<{
+        actors: string[];
+        resources: { id: number; name: string | null }[];
+        locations: string[];
+    }>(cacheKey);
+    if (cached !== undefined) {
+        logger.debug(`[ACCESS_FILTER_ATTRS] Cache HIT for ${cacheKey}`);
+        return cached;
+    }
+
+    logger.debug(`[ACCESS_FILTER_ATTRS] Cache MISS for ${cacheKey}`);
+
     const baseConditions = and(
         gt(accessAuditLog.timestamp, timeStart),
         lt(accessAuditLog.timestamp, timeEnd),
@@ -189,7 +208,7 @@ async function queryUniqueFilterAttributes(
         )
         .where(baseConditions);
 
-    return {
+    const result = {
         actors: uniqueActors
             .map((row) => row.actor)
             .filter((actor): actor is string => actor !== null),
@@ -200,6 +219,12 @@ async function queryUniqueFilterAttributes(
             .map((row) => row.locations)
             .filter((location): location is string => location !== null)
     };
+
+    // Cache for 15 minutes to reduce disk I/O
+    cache.set(cacheKey, result, 900);
+    logger.debug(`[ACCESS_FILTER_ATTRS] Cached result (900s TTL)`);
+
+    return result;
 }
 
 registry.registerPath({

@@ -12,6 +12,29 @@ import { QueryRequestAuditLogResponse } from "@server/routers/auditLogs/types";
 import response from "@server/lib/response";
 import logger from "@server/logger";
 import { getSevenDaysAgo } from "@app/lib/getSevenDaysAgo";
+import cache from "@server/lib/cache";
+
+// Cache hit rate monitoring - logs summary every 5 minutes to avoid spam
+let cacheHits = 0;
+let cacheMisses = 0;
+let lastStatsLogTime = Date.now();
+
+function logCacheStats() {
+    const now = Date.now();
+    const timeSinceLastLog = now - lastStatsLogTime;
+
+    // Log stats every 5 minutes (300000ms)
+    if (timeSinceLastLog >= 300000 && (cacheHits > 0 || cacheMisses > 0)) {
+        const total = cacheHits + cacheMisses;
+        const hitRate = total > 0 ? ((cacheHits / total) * 100).toFixed(1) : "0.0";
+        logger.info(`[FILTER_ATTRS] Cache stats: ${cacheHits} hits, ${cacheMisses} misses (${hitRate}% hit rate) over ${Math.round(timeSinceLastLog / 60000)} minutes`);
+
+        // Reset counters
+        cacheHits = 0;
+        cacheMisses = 0;
+        lastStatsLogTime = now;
+    }
+}
 
 export const queryAccessAuditLogsQuery = z.object({
     // iso string just validate its a parseable date
@@ -167,6 +190,31 @@ async function queryUniqueFilterAttributes(
     timeEnd: number,
     orgId: string
 ) {
+    // Cache key includes orgId and rounded time range (15-minute buckets) to reduce cache misses
+    // while still providing reasonable freshness for filter attributes
+    const roundedStart = Math.floor(timeStart / 900) * 900; // Round to 15-minute intervals
+    const roundedEnd = Math.floor(timeEnd / 900) * 900;
+    const cacheKey = `filterAttrs:${orgId}:${roundedStart}:${roundedEnd}`;
+
+    // Check cache first - these queries are EXTREMELY expensive (full table scans with DISTINCT)
+    const cached = cache.get<{
+        actors: string[];
+        resources: { id: number; name: string | null }[];
+        locations: string[];
+        hosts: string[];
+        paths: string[];
+    }>(cacheKey);
+    if (cached !== undefined) {
+        cacheHits++;
+        logCacheStats();
+        logger.debug(`[FILTER_ATTRS] Cache HIT for ${cacheKey} - avoiding 5 expensive DISTINCT queries`);
+        return cached;
+    }
+
+    cacheMisses++;
+    logCacheStats();
+    logger.debug(`[FILTER_ATTRS] Cache MISS for ${cacheKey} - running expensive DISTINCT queries`);
+
     const baseConditions = and(
         gt(requestAuditLog.timestamp, timeStart),
         lt(requestAuditLog.timestamp, timeEnd),
@@ -176,6 +224,9 @@ async function queryUniqueFilterAttributes(
     const DISTINCT_LIMIT = 500;
 
     // TODO: SOMEONE PLEASE OPTIMIZE THIS!!!!!
+    // NOTE: These 5 DISTINCT queries cause massive disk I/O on large audit log tables
+    // Each one requires a full table scan to find unique values
+    // With millions of rows from failed auth attempts, this was causing 13.6GB of read I/O
 
     // Run all queries in parallel
     const [
@@ -231,7 +282,7 @@ async function queryUniqueFilterAttributes(
     //     throw new Error("Too many distinct filter attributes to retrieve. Please refine your time range.");
     // }
 
-    return {
+    const result = {
         actors: uniqueActors
             .map((row) => row.actor)
             .filter((actor): actor is string => actor !== null),
@@ -248,6 +299,14 @@ async function queryUniqueFilterAttributes(
             .map((row) => row.paths)
             .filter((path): path is string => path !== null)
     };
+
+    // Cache for 15 minutes - this dramatically reduces disk I/O from repeated queries
+    // Trade-off: Filter dropdowns may be up to 15 minutes stale, but this is acceptable
+    // given the massive performance improvement (avoiding 5 full table scans per page load)
+    cache.set(cacheKey, result, 900);
+    logger.debug(`[FILTER_ATTRS] Cached result for ${cacheKey} (900s TTL)`);
+
+    return result;
 }
 
 export async function queryRequestAuditLogs(
