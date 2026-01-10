@@ -235,6 +235,7 @@ export async function logRequestAudit(
         logger.debug("[REQUEST_AUDIT] Logging temporarily disabled for disk I/O testing");
         return;
 
+        /* eslint-disable no-unreachable */
         // Check retention before buffering any logs
         if (data.orgId) {
             const retentionDays = await getRetentionDays(data.orgId);
@@ -303,6 +304,7 @@ export async function logRequestAudit(
             // Normal case - schedule a flush after BATCH_INTERVAL_MS
             scheduleFlush();
         }
+        /* eslint-enable no-unreachable */
     } catch (error) {
         logger.error(error);
     }
