@@ -230,6 +230,11 @@ export async function logRequestAudit(
     }
 ) {
     try {
+        // TEMPORARILY DISABLED FOR DISK I/O TESTING
+        // This disables all request audit logging to test if writes are causing the I/O issue
+        logger.debug("[REQUEST_AUDIT] Logging temporarily disabled for disk I/O testing");
+        return;
+
         // Check retention before buffering any logs
         if (data.orgId) {
             const retentionDays = await getRetentionDays(data.orgId);

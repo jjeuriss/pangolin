@@ -3,7 +3,10 @@
     "allow": [
       "Bash(git fetch:*)",
       "Bash(grep:*)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nTEST: Temporarily disable request audit logging to isolate disk I/O issue\n\nIssue: Still seeing 19.7GB read I/O in 10 minutes despite filter caching fix.\nThis is WORSE than the original 13.6GB in 50 minutes.\n\nHypothesis: The issue might not be the filter queries, but something else:\n1. Database writes causing excessive reads \\(SQLite WAL/journal\\)?\n2. Another query path we haven''t identified yet?\n3. Database cleanup operations?\n\nThis test disables ALL request audit logging to verify if writes are the culprit.\n\nIf disk I/O drops significantly with this change, we know the issue is with\nthe audit log writes themselves \\(or triggered by them\\), not the filter queries.\n\nNext steps after testing:\n- If I/O drops: Investigate SQLite write behavior, WAL mode, journal size\n- If I/O persists: Look for other query sources \\(analytics, cleanup jobs, etc.\\)\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)"
     ]
   }
 }
