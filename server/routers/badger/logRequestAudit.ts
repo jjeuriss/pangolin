@@ -257,8 +257,10 @@ export async function logRequestAudit(
     try {
         // CRITICAL FIX: Check retention with cache stampede protection
         if (data.orgId) {
+            const orgId = data.orgId; // Capture for type safety in callbacks
+
             const cached = cache.get<number>(
-                `org_${data.orgId}_retentionDays`
+                `org_${orgId}_retentionDays`
             );
 
             if (cached !== undefined) {
@@ -270,14 +272,14 @@ export async function logRequestAudit(
                 // Cache miss - fire background retention check ONLY if not already in flight
                 // This prevents cache stampede: multiple concurrent requests will wait for
                 // the first query to complete rather than all firing duplicate queries
-                if (!inflightRetentionChecks.has(data.orgId)) {
-                    inflightRetentionChecks.add(data.orgId);
-                    getRetentionDays(data.orgId)
+                if (!inflightRetentionChecks.has(orgId)) {
+                    inflightRetentionChecks.add(orgId);
+                    getRetentionDays(orgId)
                         .catch((err) => {
                             logger.error("Error checking retention days:", err);
                         })
                         .finally(() => {
-                            inflightRetentionChecks.delete(data.orgId);
+                            inflightRetentionChecks.delete(orgId);
                         });
                 }
                 // Don't wait for the result - log anyway on first requests while check is pending
