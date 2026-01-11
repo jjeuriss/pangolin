@@ -4,6 +4,7 @@ import { and, eq, lt } from "drizzle-orm";
 import cache from "@server/lib/cache";
 import { calculateCutoffTimestamp } from "@server/lib/cleanupLogs";
 import { stripPortFromHost } from "@server/lib/ip";
+import { isFeatureDisabled } from "@server/lib/featureFlags";
 
 /**
 
@@ -254,6 +255,11 @@ export async function logRequestAudit(
         requestIp?: string;
     }
 ) {
+    // DISK_IO_INVESTIGATION: Skip all audit logging when flag is set
+    if (isFeatureDisabled("DISABLE_AUDIT_LOGGING")) {
+        return;
+    }
+
     // CRITICAL FIX v1.14.1: Skip unauthenticated requests without orgId
     // Unauthenticated requests (no orgId) were being buffered for audit logging but never
     // flushed to the database (can't store without org context), causing unbounded buffer

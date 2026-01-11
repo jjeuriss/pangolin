@@ -19,6 +19,7 @@ import {
     resourceHeaderAuthExtendedCompatibility
 } from "@server/db";
 import { and, eq } from "drizzle-orm";
+import { isFeatureDisabled } from "@server/lib/featureFlags";
 
 export type ResourceWithAuth = {
     resource: Resource | null;
@@ -40,6 +41,11 @@ export type UserSessionWithUser = {
 export async function getResourceByDomain(
     domain: string
 ): Promise<ResourceWithAuth | null> {
+    // DISK_IO_INVESTIGATION: Skip all session queries when flag is set
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return null;
+    }
+
     const [result] = await db
         .select()
         .from(resources)
@@ -87,6 +93,10 @@ export async function getResourceByDomain(
 export async function getUserSessionWithUser(
     userSessionId: string
 ): Promise<UserSessionWithUser | null> {
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return null;
+    }
+
     const [res] = await db
         .select()
         .from(sessions)
@@ -107,6 +117,10 @@ export async function getUserSessionWithUser(
  * Get user organization role
  */
 export async function getUserOrgRole(userId: string, orgId: string) {
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return null;
+    }
+
     const userOrgRole = await db
         .select()
         .from(userOrgs)
@@ -123,6 +137,10 @@ export async function getRoleResourceAccess(
     resourceId: number,
     roleId: number
 ) {
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return null;
+    }
+
     const roleResourceAccess = await db
         .select()
         .from(roleResources)
@@ -144,6 +162,10 @@ export async function getUserResourceAccess(
     userId: string,
     resourceId: number
 ) {
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return null;
+    }
+
     const userResourceAccess = await db
         .select()
         .from(userResources)
@@ -164,6 +186,10 @@ export async function getUserResourceAccess(
 export async function getResourceRules(
     resourceId: number
 ): Promise<ResourceRule[]> {
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return [];
+    }
+
     const rules = await db
         .select()
         .from(resourceRules)
@@ -178,6 +204,10 @@ export async function getResourceRules(
 export async function getOrgLoginPage(
     orgId: string
 ): Promise<LoginPage | null> {
+    if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        return null;
+    }
+
     const [result] = await db
         .select()
         .from(loginPageOrg)

@@ -1,7 +1,13 @@
 import logger from "@server/logger";
 import { maxmindAsnLookup } from "@server/db/maxmindAsn";
+import { isFeatureDisabled } from "@server/lib/featureFlags";
 
 export async function getAsnForIp(ip: string): Promise<number | undefined> {
+    // DISK_IO_INVESTIGATION: Skip ASN lookup when flag is set
+    if (isFeatureDisabled("DISABLE_ASN_LOOKUP")) {
+        return undefined;
+    }
+
     try {
         if (!maxmindAsnLookup) {
             logger.debug(

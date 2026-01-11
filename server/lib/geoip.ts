@@ -1,9 +1,15 @@
 import logger from "@server/logger";
 import { maxmindLookup } from "@server/db/maxmind";
+import { isFeatureDisabled } from "@server/lib/featureFlags";
 
 export async function getCountryCodeForIp(
     ip: string
 ): Promise<string | undefined> {
+    // DISK_IO_INVESTIGATION: Skip GeoIP lookup when flag is set
+    if (isFeatureDisabled("DISABLE_GEOIP_LOOKUP")) {
+        return undefined;
+    }
+
     try {
         if (!maxmindLookup) {
             logger.debug(

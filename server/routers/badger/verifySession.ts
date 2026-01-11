@@ -42,6 +42,7 @@ import { logRequestAudit } from "./logRequestAudit";
 import cache from "@server/lib/cache";
 import semver from "semver";
 import { APP_VERSION } from "@server/lib/consts";
+import { isFeatureDisabled } from "@server/lib/featureFlags";
 
 /**
  * Deduplicate failed auth attempts to prevent logging spam from repeated requests
@@ -1020,6 +1021,11 @@ async function checkRules(
     ipCC?: string,
     ipAsn?: number
 ): Promise<"ACCEPT" | "DROP" | "PASS" | undefined> {
+    // DISK_IO_INVESTIGATION: Skip rules check when flag is set
+    if (isFeatureDisabled("DISABLE_RULES_CHECK")) {
+        return undefined;
+    }
+
     const ruleCacheKey = `rules:${resourceId}`;
 
     let rules: ResourceRule[] | undefined = cache.get(ruleCacheKey);
