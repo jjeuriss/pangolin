@@ -61,38 +61,6 @@ const inflightRetentionChecks = new Set<string>();
 let retentionQueryCount = 0;
 let lastRetentionLogTime = Date.now();
 
-// Buffer monitoring - logs buffer size every 30 seconds
-let monitoringInterval: NodeJS.Timeout | null = null;
-monitoringInterval = setInterval(() => {
-    const bufferSize = auditLogBuffer.length;
-    const estimatedMemoryKB = Math.round(bufferSize * 1.5);
-
-    // Calculate retention query rate
-    const now = Date.now();
-    const elapsedSec = (now - lastRetentionLogTime) / 1000;
-    const qps = elapsedSec > 0 ? (retentionQueryCount / elapsedSec).toFixed(2) : "0.00";
-
-    // Always log to confirm monitoring is active (even when buffer is 0)
-    logger.info(
-        `[DISK_IO_DEBUG] Audit buffer: ${bufferSize} items, ~${estimatedMemoryKB}KB | ` +
-        `Retention queries: ${retentionQueryCount} in ${elapsedSec.toFixed(1)}s (${qps}/sec) | ` +
-        `In-flight: ${inflightRetentionChecks.size} | ` +
-        `Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
-    );
-
-    // Reset retention query counter
-    retentionQueryCount = 0;
-    lastRetentionLogTime = now;
-
-    // Safety valve: if buffer is too large, force flush
-    if (bufferSize > MAX_BUFFER_SIZE) {
-        logger.warn(`Audit buffer exceeded ${MAX_BUFFER_SIZE} items! Force flushing...`);
-        flushAuditLogs().catch((err) =>
-            logger.error("Error in force flush:", err)
-        );
-    }
-}, 30000);
-
 /**
  * Flush buffered logs to database with retry logic
  */
@@ -344,3 +312,36 @@ export async function logRequestAudit(
         logger.error(error);
     }
 }
+
+// Initialize monitoring interval after all functions are declared
+setInterval(() => {
+    const bufferSize = auditLogBuffer.length;
+    const estimatedMemoryKB = Math.round(bufferSize * 1.5);
+
+    // Calculate retention query rate
+    const now = Date.now();
+    const elapsedSec = (now - lastRetentionLogTime) / 1000;
+    const qps = elapsedSec > 0 ? (retentionQueryCount / elapsedSec).toFixed(2) : "0.00";
+
+    // Always log to confirm monitoring is active (even when buffer is 0)
+    logger.info(
+        `[DISK_IO_DEBUG] Audit buffer: ${bufferSize} items, ~${estimatedMemoryKB}KB | ` +
+            `Retention queries: ${retentionQueryCount} in ${elapsedSec.toFixed(1)}s (${qps}/sec) | ` +
+            `In-flight: ${inflightRetentionChecks.size} | ` +
+            `Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+    );
+
+    // Reset retention query counter
+    retentionQueryCount = 0;
+    lastRetentionLogTime = now;
+
+    // Safety valve: if buffer is too large, force flush
+    if (bufferSize > MAX_BUFFER_SIZE) {
+        logger.warn(
+            `Audit buffer exceeded ${MAX_BUFFER_SIZE} items! Force flushing...`
+        );
+        flushAuditLogs().catch((err) =>
+            logger.error("Error in force flush:", err)
+        );
+    }
+}, 30000);
