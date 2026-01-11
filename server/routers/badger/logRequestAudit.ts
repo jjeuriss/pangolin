@@ -270,8 +270,12 @@ export async function logRequestAudit(
                 if (!inflightRetentionChecks.has(data.orgId)) {
                     inflightRetentionChecks.add(data.orgId);
                     getRetentionDays(data.orgId)
-                        .catch((err) => logger.error("Error checking retention days:", err))
-                        .finally(() => inflightRetentionChecks.delete(data.orgId));
+                        .catch((err) => {
+                            logger.error("Error checking retention days:", err);
+                        })
+                        .finally(() => {
+                            inflightRetentionChecks.delete(data.orgId);
+                        });
                 }
                 // Don't wait for result - log anyway on first requests while check is pending
             }
