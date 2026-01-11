@@ -181,7 +181,9 @@ async function getRetentionDays(orgId: string): Promise<number> {
 
     // CRITICAL FIX: Track this query for monitoring
     retentionQueryCount++;
-    logger.debug(`[DISK_IO_DEBUG] getRetentionDays DB query #${retentionQueryCount} for org ${orgId}`);
+    logger.debug(
+        `[DISK_IO_DEBUG] getRetentionDays DB query #${retentionQueryCount} for org ${orgId}`
+    );
 
     const [org] = await db
         .select({
