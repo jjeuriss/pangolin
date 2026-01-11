@@ -1,0 +1,11 @@
+# Docker Compose override for debugging with Chrome DevTools
+# Usage: docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+
+services:
+  app:
+    environment:
+      - NODE_OPTIONS=--inspect=0.0.0.0:9229 --max-old-space-size=512
+    ports:
+      - "9229:9229"
+    # Disable restart so container stops on crashes for debugging
+    restart: "no"
