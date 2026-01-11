@@ -61,6 +61,9 @@ const inflightRetentionChecks = new Set<string>();
 let retentionQueryCount = 0;
 let lastRetentionLogTime = Date.now();
 
+// Monitoring interval reference for cleanup on shutdown
+let monitoringInterval: NodeJS.Timeout | null = null;
+
 /**
  * Flush buffered logs to database with retry logic
  */
@@ -314,7 +317,7 @@ export async function logRequestAudit(
 }
 
 // Initialize monitoring interval after all functions are declared
-setInterval(() => {
+monitoringInterval = setInterval(() => {
     const bufferSize = auditLogBuffer.length;
     const estimatedMemoryKB = Math.round(bufferSize * 1.5);
 
