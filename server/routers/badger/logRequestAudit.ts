@@ -254,37 +254,43 @@ export async function logRequestAudit(
         requestIp?: string;
     }
 ) {
+    // CRITICAL FIX v1.14.1: Skip unauthenticated requests without orgId
+    // Unauthenticated requests (no orgId) were being buffered for audit logging but never
+    // flushed to the database (can't store without org context), causing unbounded buffer
+    // growth and OOM errors. Now we skip logging for orgId-less requests.
+    if (!data.orgId) {
+        return;
+    }
+
     try {
-        // CRITICAL FIX: Check retention with cache stampede protection
-        if (data.orgId) {
-            const orgId = data.orgId; // Capture for type safety in callbacks
+        // Check retention with cache stampede protection
+        const orgId = data.orgId; // Capture for type safety in callbacks
 
-            const cached = cache.get<number>(
-                `org_${orgId}_retentionDays`
-            );
+        const cached = cache.get<number>(
+            `org_${orgId}_retentionDays`
+        );
 
-            if (cached !== undefined) {
-                // Cache hit - use it
-                if (cached === 0) {
-                    return; // Retention disabled, don't log
-                }
-            } else {
-                // Cache miss - fire background retention check ONLY if not already in flight
-                // This prevents cache stampede: multiple concurrent requests will wait for
-                // the first query to complete rather than all firing duplicate queries
-                if (!inflightRetentionChecks.has(orgId)) {
-                    inflightRetentionChecks.add(orgId);
-                    getRetentionDays(orgId)
-                        .catch((err) => {
-                            logger.error("Error checking retention days:", err);
-                        })
-                        .finally(() => {
-                            inflightRetentionChecks.delete(orgId);
-                        });
-                }
-                // Don't wait for the result - log anyway on first requests while check is pending
-                // This ensures we don't block request processing
+        if (cached !== undefined) {
+            // Cache hit - use it
+            if (cached === 0) {
+                return; // Retention disabled, don't log
             }
+        } else {
+            // Cache miss - fire background retention check ONLY if not already in flight
+            // This prevents cache stampede: multiple concurrent requests will wait for
+            // the first query to complete rather than all firing duplicate queries
+            if (!inflightRetentionChecks.has(orgId)) {
+                inflightRetentionChecks.add(orgId);
+                getRetentionDays(orgId)
+                    .catch((err) => {
+                        logger.error("Error checking retention days:", err);
+                    })
+                    .finally(() => {
+                        inflightRetentionChecks.delete(orgId);
+                    });
+            }
+            // Don't wait for the result - log anyway on first requests while check is pending
+            // This ensures we don't block request processing
         }
 
         let actorType: string | undefined;
