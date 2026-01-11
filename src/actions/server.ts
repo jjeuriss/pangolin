@@ -92,14 +92,33 @@ async function makeApiRequest<T>(
 
     let res: Response;
     try {
+        // Add 10 second timeout to prevent unbounded requests from accumulating in memory
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        
         res = await fetch(url, {
             method,
             headers,
             body: body ? JSON.stringify(body) : undefined,
-            cache: "no-store"
+            cache: "no-store",
+            signal: controller.signal
         });
+        
+        clearTimeout(timeoutId);
     } catch (fetchError) {
         console.error("API request failed:", fetchError);
+        
+        // Check if it was a timeout
+        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+            return {
+                data: null,
+                success: false,
+                error: true,
+                message: "Request timeout (10s exceeded). Please try again.",
+                status: 0
+            };
+        }
+        
         return {
             data: null,
             success: false,

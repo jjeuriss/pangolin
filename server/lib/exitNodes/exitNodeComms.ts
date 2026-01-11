@@ -44,20 +44,26 @@ export async function sendToExitNode(
                 response = await axios.post(url, request.data, {
                     headers: {
                         "Content-Type": "application/json"
-                    }
+                    },
+                    timeout: 8000 // 8 second timeout to prevent hung connections
                 });
                 break;
             case "DELETE":
-                response = await axios.delete(url);
+                response = await axios.delete(url, {
+                    timeout: 8000 // 8 second timeout to prevent hung connections
+                });
                 break;
             case "GET":
-                response = await axios.get(url);
+                response = await axios.get(url, {
+                    timeout: 8000 // 8 second timeout to prevent hung connections
+                });
                 break;
             case "PUT":
                 response = await axios.put(url, request.data, {
                     headers: {
                         "Content-Type": "application/json"
-                    }
+                    },
+                    timeout: 8000 // 8 second timeout to prevent hung connections
                 });
                 break;
             default:
