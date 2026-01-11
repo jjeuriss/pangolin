@@ -1,208 +1,179 @@
-# Disk I/O Investigation - Pangolin 1.13.0 Regression
+# Disk I/O Investigation - v1.13.0/1.14.0/1.14.1
 
-## Timeline of Investigation
-
-### Initial Problem
-- **Reported**: 13.6GB read I/O in 50 minutes on version 1.13.0
-- **Baseline**: Version 1.12.3 had normal I/O levels
-- **Symptom**: Synology Photos app unable to load photos due to authentication failure
-- **Impact**: Even unauthenticated requests causing massive disk reads
-
-### Fix Attempt #1: Analytics Auto-Refresh (DISK_IO_FIX.md)
-**Hypothesis**: Analytics queries running every 30 seconds causing excessive I/O
-
-**Implementation**: Disabled auto-refresh in `src/lib/queries.ts`
-```typescript
-refetchInterval: false  // Was: 30 seconds
-```
-
-**Result**: ❌ **FAILED** - Did not resolve the issue
+## Problem Statement
+- **Symptoms**: 14.9GB disk I/O in 7 minutes on v1.13.0
+- **Trigger**: Synology Photos app making ~50+ unauthenticated requests per 3 seconds
+- **Impact**: OOM crashes, memory exhaustion, VPS instability
+- **Issue**: Excessive READ I/O - much more than expected for simple authentication checks
 
 ---
 
-### Fix Attempt #2: Filter Attributes Caching (DISK_IO_FIX_FILTER_ATTRIBUTES.md)
-**Hypothesis**: `queryUniqueFilterAttributes()` running expensive DISTINCT queries on every audit logs page load
+## Attempted Fixes (All Failed)
 
-**Root Cause Analysis**:
-- File: `server/routers/auditLogs/queryRequestAuditLog.ts`
-- Function runs 5 DISTINCT queries in parallel on every page load
-- Each DISTINCT requires full table scan of `requestAuditLog` table
-- With millions of rows from failed auth spam, this causes massive I/O
+### 1. Cache Stampede on getRetentionDays() - COMMIT 97645964
+**Hypothesis**: Multiple concurrent unauthenticated requests causing cache misses on retention check, triggering thundering herd of duplicate DB queries (35/sec)
 
 **Implementation**:
-- Added 15-minute caching to filter attributes queries
-- Implemented time bucketing for better cache hit rate
-- Added TypeScript type safety
-- Added non-spammy cache monitoring (logs every 5 minutes)
+- Added `inflightRetentionChecks` Set to deduplicate in-flight retention queries
+- Increased cache TTL from 300s to 3600s
+- Added comprehensive DISK_IO_DEBUG monitoring
 
-**Files Changed**:
-- `server/routers/auditLogs/queryRequestAuditLog.ts`
-- `server/private/routers/auditLogs/queryAccessAuditLog.ts`
-- `server/private/routers/auditLogs/queryActionAuditLog.ts`
-
-**Cache Performance**:
-```
-Cache stats: 2 hits, 1 misses (66.7% hit rate) over 12 minutes
-```
-
-**Result**: ❌ **FAILED** - I/O actually got **WORSE**
-- Before fix: 13.6GB in 50 minutes (~272 MB/min)
-- After fix: **19.7GB in 10 minutes (~1.97 GB/min)**
-- After fix: **22.5GB in ~15 minutes (~1.5 GB/min)**
-
-**Conclusion**: Filter queries were NOT the main issue
+**Result**: ❌ **FAILED**
+- Retention queries reduced from 35/sec to 0/sec ✓
+- Disk I/O still 22.7GB ✗
+- Conclusion: Not the root cause
 
 ---
 
-### Current Test: Disable All Request Audit Logging
-**Hypothesis**: Database **writes** (audit log inserts) are causing excessive **reads**
+### 2. Unbounded Audit Log Buffer for Unauthenticated Requests - COMMIT feb8fbb8
+**Hypothesis**: Unauthenticated requests without orgId were being buffered indefinitely but never flushed to DB (no org context), causing unbounded buffer growth and OOM
 
-**Observation**:
-- Database file: `/app/config/db/db.sqlite` (only 1MB)
-- 22.5GB read I/O with 1MB database = **~22,500 full database reads**
-- This is completely abnormal for SQLite
+**Implementation**:
+- Added early return in `logRequestAudit()` to skip logging if `!data.orgId`
+- Prevents buffering of orgId-less requests entirely
 
-**Possible Causes**:
-1. **SQLite WAL Checkpoint Issues**
-   - WAL file not present (checked, no WAL file found)
-   - But writes could trigger expensive checkpoint operations
+**Result**: ❌ **FAILED** (though fix was correct for OOM issue)
+- Prevented OOM crashes ✓
+- Audit buffer stayed at 0 items ✓
+- Disk I/O still 2.36GB ✗
+- Conclusion: Not the root cause (though legitimate fix for memory exhaustion)
 
-2. **Index Maintenance During Inserts**
-   - Each INSERT updates multiple indexes
-   - Index updates might trigger full table reads for some reason
+---
 
-3. **Query Running in Loop**
-   - Hidden background query polling the database
-   - Telemetry/health checks reading excessively
+### 3. Missing Database Index on resources.fullDomain - COMMIT bb8d8292 + 2ccc92a1
+**Hypothesis**: `getResourceByDomain()` query filters by fullDomain but has no index, causing O(n) full table scans on every cache miss. With 200 requests and cache misses, this could cause massive disk I/O.
 
-4. **File System Issue**
-   - Docker volume causing read amplification
-   - Host file system issues
+**Implementation**:
+- Added `idx_resources_fullDomain` index to both SQLite and PostgreSQL schemas
+- Created v1.14.1 migration scripts to create index on startup
+- Deployed to VPS
 
-**Test Implementation**:
-File: `server/routers/badger/logRequestAudit.ts`
-```typescript
-export async function logRequestAudit(...) {
-    try {
-        // TEMPORARILY DISABLED FOR DISK I/O TESTING
-        logger.debug("[REQUEST_AUDIT] Logging temporarily disabled for disk I/O testing");
-        return;
-        // ... rest of function commented out with eslint-disable
-    }
-}
+**Result**: ❌ **INCONCLUSIVE / POSSIBLY FAILED**
+- Migration ran successfully on VPS ✓
+- Test results unclear - growth measurements similar before/after
+  - Unfixed test: 364kB → 523kB (159kB growth)
+  - Fixed test: 322kB → 489kB (167kB growth)
+- User reported still seeing 2.36GB+ disk I/O in docker stats ✗
+- Conclusion: Index may not have actually solved the problem
+
+---
+
+## Test Data Collected
+
+### Unfixed Version (v1.14.0 without fixes)
+```
+Baseline READ I/O: 364kB
+After 200 unauthenticated requests: 523kB
+Growth: 159kB
+User observation: 2.36GB total READ I/O reported
 ```
 
-**Expected Outcome**:
-- **If I/O drops significantly**: Issue is with audit log writes → investigate SQLite write behavior
-- **If I/O persists**: Issue is elsewhere → look for hidden query loops
-
-**Status**: ⏳ Build in progress, waiting for deployment
-
----
-
-## Technical Details
-
-### Database Information
-- **Engine**: SQLite
-- **File**: `/app/config/db/db.sqlite`
-- **Size**: 1MB
-- **WAL Mode**: Not enabled (no .sqlite-wal file present)
-
-### Request Pattern from Synology Photos
-- **Frequency**: ~50+ requests every 3 seconds
-- **Type**: Thumbnail requests (GET /webapi/entry.cgi)
-- **Authentication**: All failing (no valid session)
-- **Result**: Every request triggers audit log write
-
-### Read I/O Metrics
+### Fixed Version (v1.14.1 with index)
 ```
-Container uptime: 15 minutes
-Total read I/O: 22.5GB
-Read rate: ~1.5 GB/min
-Database size: 1MB
-Reads per database: ~22,500 times
+Baseline READ I/O: 322kB
+After 200 unauthenticated requests: 489kB
+Growth: 167kB
 ```
 
-**This is abnormal** - a 1MB database should not cause 22.5GB of read I/O in 15 minutes.
+**Issue**: Test shows minimal growth, but user reports 2.36GB still being used. Test methodology may not be capturing the actual problem.
 
 ---
 
-## Next Steps
+## Key Findings
 
-1. **Test with audit logging disabled** (in progress)
-   - Deploy commit `e2b30723` (fixed build errors in `5ed4e429`)
-   - Monitor disk I/O for 10-15 minutes
-   - Compare before/after metrics
+### What We Know:
+1. **Unauthenticated requests only** - Authenticated requests don't cause the issue
+2. **Volume dependent** - Problem only appears with high volume of unauthenticated requests
+3. **Memory + Disk I/O** - Both memory and disk I/O spike together
+4. **OOM crashes** - VPS had to be rebooted due to memory exhaustion
+5. **Database access** - Requests do go through verify-session endpoint and trigger database queries
 
-2. **If I/O drops**:
-   - Investigate SQLite write performance
-   - Consider optimizing audit log table structure
-   - Look into WAL mode configuration
-   - Check if indexes are causing issues
+### Database Queries Triggered by Unauthenticated Requests:
+1. `getResourceByDomain()` - Looks up resource by domain (cached for 5s)
+2. `getResourceRules()` - If rules are enabled (cached for 5s)
+3. `getUserSessionWithUser()` - If user session present (cached for 5s)
+4. `verifyResourceAccessToken()` - If access token present
+5. `getOrgLoginPage()` - If access denied and tier is STANDARD
 
-3. **If I/O persists**:
-   - Enable query logging to see what's actually reading
-   - Check for hidden background jobs
-   - Investigate Docker volume performance
-   - Look for memory-mapped file issues
-
----
-
-## Files Modified in This Investigation
-
-### Disk I/O Fix Attempts
-1. `src/lib/queries.ts` - Disabled analytics auto-refresh
-2. `server/routers/auditLogs/queryRequestAuditLog.ts` - Added filter caching + monitoring
-3. `server/private/routers/auditLogs/queryAccessAuditLog.ts` - Added filter caching
-4. `server/private/routers/auditLogs/queryActionAuditLog.ts` - Added filter caching
-5. `server/routers/badger/logRequestAudit.ts` - Temporarily disabled for testing
-
-### Documentation
-1. `DISK_IO_FIX.md` - Analytics auto-refresh fix documentation
-2. `DISK_IO_FIX_FILTER_ATTRIBUTES.md` - Filter caching fix documentation
-3. `DISK_IO_INVESTIGATION.md` - This file
+### What's NOT the Issue:
+- ❌ Cache stampede on retention queries (fixed but didn't help)
+- ❌ Unbounded audit log buffer (fixed but didn't help)
+- ❌ Filter attribute caching (investigated, not related)
+- ❌ Analytics queries (checked, disabled in testing)
+- ❌ Audit logging (disabled in one test attempt)
 
 ---
 
-## Commits
+## Files Modified (v1.14.0 → v1.14.1)
 
-1. `a750f18f` - Fix disk I/O regression: Add caching to audit log filter queries
-2. `e2b30723` - TEST: Temporarily disable request audit logging to isolate disk I/O issue
-3. `5ed4e429` - Fix build: Add eslint-disable for unreachable code in test version
+### Schema Changes:
+- `server/db/sqlite/schema/schema.ts` - Added index definition
+- `server/db/pg/schema/schema.ts` - Added index definition
 
----
+### Migration Files Created:
+- `server/setup/scriptsSqlite/1.14.1.ts` - SQLite migration
+- `server/setup/scriptsPg/1.14.1.ts` - PostgreSQL migration
+- `server/setup/migrationsSqlite.ts` - Registered 1.14.1 migration
+- `server/setup/migrationsPg.ts` - Registered 1.14.1 migration
 
-## Questions Still Open
+### Version:
+- `server/lib/consts.ts` - Bumped to 1.14.1
 
-1. **Why is a 1MB database causing 22.5GB of read I/O?**
-   - This suggests either:
-     - Extremely inefficient query patterns
-     - File system issue (read amplification)
-     - Hidden query loop we haven't discovered
-
-2. **Was this issue present in 1.12.3?**
-   - Need to compare disk I/O metrics from 1.12.3 with same request load
-   - User reports issue started in 1.13.0
-
-3. **What changed in the database layer between 1.12.3 and 1.13.0?**
-   - Need to review database schema changes
-   - Check for new indexes added
-   - Look for query pattern changes
+### Previous Fixes (Still in Place):
+- `server/routers/badger/logRequestAudit.ts` - Cache stampede fix + audit log skip
+- `server/setup/scriptsSqlite/1.14.0.ts` - v1.14.0 migrations (maintenance mode features)
 
 ---
 
-## Useful Commands for Monitoring
+## Docker Build Information
+- **Latest build**: `2ccc92a1` (v1.14.1 with index migration)
+- **Status**: Successfully built and deployed to VPS
+- **Migration**: Confirmed executed on container startup
+- **Tag**: `jjeuriss/pangolin:fixed`
 
-```bash
-# Check current disk I/O
-ssh root@vps -i ~/.ssh/id_strato "docker stats --no-stream pangolin"
+---
 
-# Check cache effectiveness
-ssh root@vps -i ~/.ssh/id_strato "docker logs pangolin 2>&1 | grep FILTER_ATTRS"
+## Next Steps for New Session
 
-# Check audit log disabled message
-ssh root@vps -i ~/.ssh/id_strato "docker logs pangolin 2>&1 | grep REQUEST_AUDIT"
+1. **Investigate Test Methodology**
+   - Current test might not be measuring cumulative I/O correctly
+   - `docker stats --no-stream` may reset between measurements
+   - Need to verify how READ I/O accumulates over time
 
-# Count request attempts
-ssh root@vps -i ~/.ssh/id_strato "docker logs pangolin 2>&1 | grep -c 'Verify session: Badger sent'"
-```
+2. **Profile Under Real Load**
+   - Run sustained traffic (not just 200 one-time requests)
+   - Monitor I/O rate over extended period
+   - Check if I/O is linear or exponential with request volume
+
+3. **Check What Query is Actually Heavy**
+   - Add detailed query logging/tracing
+   - Measure time per query
+   - Identify which specific database operation is slow
+   - May need to profile at SQL level
+
+4. **Verify Cache Behavior**
+   - Check if cache is actually working
+   - Verify cache hits/misses during test
+   - Ensure resources aren't being re-queried constantly
+
+5. **Consider Alternative Root Causes**
+   - SQLite-specific limitations (may need better config)
+   - Connection pooling issues
+   - Query plan optimization
+   - Lock contention
+   - Disk subsystem limitations on VPS hardware
+
+---
+
+## Important Context
+
+- User can connect to VPS at: `ssh root@vps -i ~/.ssh/id_strato`
+- Docker container: `docker exec pangolin [command]`
+- Database: SQLite at `/data/pangolin.db`
+- Current version deployed: v1.14.1 with index fix
+- Commits since start of investigation:
+  - `97645964` - Cache stampede fix
+  - `feb8fbb8` - Audit log skip for unauthenticated requests
+  - `bb8d8292` - Database index (schema only)
+  - `2ccc92a1` - Database index (migration files + version bump)
+
