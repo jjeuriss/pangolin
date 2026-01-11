@@ -56,13 +56,41 @@ let flushTimer: NodeJS.Timeout | null = null;
 let failedFlushCount = 0;
 
 // CRITICAL FIX: Track in-flight retention checks to prevent cache stampede
-// With Synology Photos making 16 req/sec, even brief cache misses cause thundering herd of DB queries
 const inflightRetentionChecks = new Set<string>();
 let retentionQueryCount = 0;
 let lastRetentionLogTime = Date.now();
 
-// Monitoring interval reference for cleanup on shutdown
+// Buffer monitoring - logs buffer size every 30 seconds
 let monitoringInterval: NodeJS.Timeout | null = null;
+monitoringInterval = setInterval(() => {
+    const bufferSize = auditLogBuffer.length;
+    const estimatedMemoryKB = Math.round(bufferSize * 1.5);
+
+    // Calculate retention query rate
+    const now = Date.now();
+    const elapsedSec = (now - lastRetentionLogTime) / 1000;
+    const qps = elapsedSec > 0 ? (retentionQueryCount / elapsedSec).toFixed(2) : "0.00";
+
+    // Log comprehensive monitoring stats
+    logger.info(
+        `[DISK_IO_DEBUG] Audit buffer: ${bufferSize} items, ~${estimatedMemoryKB}KB | ` +
+        `Retention queries: ${retentionQueryCount} in ${elapsedSec.toFixed(1)}s (${qps}/sec) | ` +
+        `In-flight: ${inflightRetentionChecks.size} | ` +
+        `Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+    );
+
+    // Reset counters for next period
+    retentionQueryCount = 0;
+    lastRetentionLogTime = now;
+
+    // Safety valve: if buffer is too large, force flush
+    if (bufferSize > MAX_BUFFER_SIZE) {
+        logger.warn(`Audit buffer exceeded ${MAX_BUFFER_SIZE} items! Force flushing...`);
+        flushAuditLogs().catch((err) =>
+            logger.error("Error in force flush:", err)
+        );
+    }
+}, 30000);
 
 /**
  * Flush buffered logs to database with retry logic
@@ -150,7 +178,7 @@ async function getRetentionDays(orgId: string): Promise<number> {
         return cached;
     }
 
-    // CRITICAL FIX: Track this query for monitoring
+    // Track this database query for monitoring
     retentionQueryCount++;
     logger.debug(
         `[DISK_IO_DEBUG] getRetentionDays DB query #${retentionQueryCount} for org ${orgId}`
@@ -169,7 +197,8 @@ async function getRetentionDays(orgId: string): Promise<number> {
         return 0;
     }
 
-    // CRITICAL FIX: Increase cache TTL from 5min to 1 hour (3600s) to reduce query frequency
+    // CRITICAL FIX: Increase cache TTL from 5min (300s) to 1 hour (3600s)
+    // This reduces cache miss frequency by 91.7% (from 12 misses/hour to 1 miss/hour)
     cache.set(
         `org_${orgId}_retentionDays`,
         org.settingsLogRetentionDaysRequest,
@@ -228,16 +257,19 @@ export async function logRequestAudit(
     try {
         // CRITICAL FIX: Check retention with cache stampede protection
         if (data.orgId) {
-            const cached = cache.get<number>(`org_${data.orgId}_retentionDays`);
+            const cached = cache.get<number>(
+                `org_${data.orgId}_retentionDays`
+            );
 
-            // If cached, use it immediately
             if (cached !== undefined) {
+                // Cache hit - use it
                 if (cached === 0) {
                     return; // Retention disabled, don't log
                 }
             } else {
-                // Cache miss - fire background check ONLY if not already in flight
-                // This prevents thundering herd of 16 req/sec causing 16 simultaneous DB queries
+                // Cache miss - fire background retention check ONLY if not already in flight
+                // This prevents cache stampede: multiple concurrent requests will wait for
+                // the first query to complete rather than all firing duplicate queries
                 if (!inflightRetentionChecks.has(data.orgId)) {
                     inflightRetentionChecks.add(data.orgId);
                     getRetentionDays(data.orgId)
@@ -248,7 +280,8 @@ export async function logRequestAudit(
                             inflightRetentionChecks.delete(data.orgId);
                         });
                 }
-                // Don't wait for result - log anyway on first requests while check is pending
+                // Don't wait for the result - log anyway on first requests while check is pending
+                // This ensures we don't block request processing
             }
         }
 
@@ -315,36 +348,3 @@ export async function logRequestAudit(
         logger.error(error);
     }
 }
-
-// Initialize monitoring interval after all functions are declared
-monitoringInterval = setInterval(() => {
-    const bufferSize = auditLogBuffer.length;
-    const estimatedMemoryKB = Math.round(bufferSize * 1.5);
-
-    // Calculate retention query rate
-    const now = Date.now();
-    const elapsedSec = (now - lastRetentionLogTime) / 1000;
-    const qps = elapsedSec > 0 ? (retentionQueryCount / elapsedSec).toFixed(2) : "0.00";
-
-    // Always log to confirm monitoring is active (even when buffer is 0)
-    logger.info(
-        `[DISK_IO_DEBUG] Audit buffer: ${bufferSize} items, ~${estimatedMemoryKB}KB | ` +
-            `Retention queries: ${retentionQueryCount} in ${elapsedSec.toFixed(1)}s (${qps}/sec) | ` +
-            `In-flight: ${inflightRetentionChecks.size} | ` +
-            `Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
-    );
-
-    // Reset retention query counter
-    retentionQueryCount = 0;
-    lastRetentionLogTime = now;
-
-    // Safety valve: if buffer is too large, force flush
-    if (bufferSize > MAX_BUFFER_SIZE) {
-        logger.warn(
-            `Audit buffer exceeded ${MAX_BUFFER_SIZE} items! Force flushing...`
-        );
-        flushAuditLogs().catch((err) =>
-            logger.error("Error in force flush:", err)
-        );
-    }
-}, 30000);
