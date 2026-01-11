@@ -143,7 +143,11 @@ export const resources = pgTable("resources", {
     maintenanceTitle: text("maintenanceTitle"),
     maintenanceMessage: text("maintenanceMessage"),
     maintenanceEstimatedTime: text("maintenanceEstimatedTime")
-});
+},
+(table) => [
+    index("idx_resources_fullDomain").on(table.fullDomain)
+]
+);
 
 export const targets = pgTable("targets", {
     targetId: serial("targetId").primaryKey(),
