@@ -257,6 +257,7 @@ export async function logRequestAudit(
 ) {
     // DISK_IO_INVESTIGATION: Skip all audit logging when flag is set
     if (isFeatureDisabled("DISABLE_AUDIT_LOGGING")) {
+        logger.debug("[DISK_IO_INVESTIGATION] Skipping audit logging - DISABLE_AUDIT_LOGGING=true");
         return;
     }
 

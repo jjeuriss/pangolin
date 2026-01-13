@@ -20,6 +20,7 @@ import {
 } from "@server/db";
 import { and, eq } from "drizzle-orm";
 import { isFeatureDisabled } from "@server/lib/featureFlags";
+import logger from "@server/logger";
 
 export type ResourceWithAuth = {
     resource: Resource | null;
@@ -43,6 +44,7 @@ export async function getResourceByDomain(
 ): Promise<ResourceWithAuth | null> {
     // DISK_IO_INVESTIGATION: Skip all session queries when flag is set
     if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
+        logger.debug(`[DISK_IO_INVESTIGATION] Skipping getResourceByDomain for domain=${domain} - DISABLE_SESSION_QUERIES=true`);
         return null;
     }
 
