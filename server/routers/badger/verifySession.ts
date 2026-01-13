@@ -43,6 +43,7 @@ import cache from "@server/lib/cache";
 import semver from "semver";
 import { APP_VERSION } from "@server/lib/consts";
 import { isFeatureDisabled } from "@server/lib/featureFlags";
+import { incrementRequestCount } from "@server/lib/memoryProfiler";
 
 /**
  * Deduplicate failed auth attempts to prevent logging spam from repeated requests
@@ -138,6 +139,7 @@ export async function verifyResourceSession(
     res: Response,
     next: NextFunction
 ): Promise<any> {
+    incrementRequestCount(); // Track for memory profiling
     logger.debug("Verify session: Badger sent", req.body); // remove when done testing
 
     const parsedBody = verifyResourceSessionSchema.safeParse(req.body);
