@@ -214,3 +214,85 @@ When session queries are disabled, the request fails fast at step 1 with "resour
 5. Is there something specific about the request/response lifecycle that holds resources?
 
 ---
+
+## Commit History (For Reference)
+
+Investigation commits in chronological order:
+
+| Commit | Description |
+|--------|-------------|
+| `97645964` | Fix cache stampede on retention check queries |
+| `feb8fbb8` | Skip audit logging for unauthenticated requests |
+| `bb8d8292` | Add missing database index on resources.fullDomain |
+| `2ccc92a1` | Database migration for fullDomain index |
+| `cbe315c2` | **Add feature flags for disk I/O investigation** |
+| `2a6f7866` | Add flag to disable org access policy checks |
+| `145ee475` | Add detailed logging for feature flag verification |
+| `6362ef81` | **Add memory profiler for leak investigation** |
+| `ede3ae40` | **Add caching to getResourceAuthInfo (60-second TTL)** |
+| `70140a78` | Update investigation findings document |
+
+**Key commits to reference:**
+- `cbe315c2` - Feature flags: `DISABLE_SESSION_QUERIES`, `DISABLE_AUDIT_LOGGING`, etc.
+- `6362ef81` - Memory profiler logs every 10 seconds
+- `ede3ae40` - getResourceAuthInfo caching fix
+
+---
+
+## Suggested Next Steps (For New Session)
+
+### Priority 1: Increase Resource Cache TTL
+In `server/routers/badger/verifySession.ts` around line 221:
+```typescript
+// Current: 5 seconds
+cache.set(resourceCacheKey, resourceData, 5);
+
+// Change to: 60 seconds
+cache.set(resourceCacheKey, resourceData, 60);
+```
+This reduces `getResourceByDomain()` database queries from every 5 seconds to every 60 seconds.
+
+### Priority 2: Monitor SQLite WAL During Test
+```bash
+# Before test
+docker exec pangolin ls -la /app/db/
+
+# During test (watch for growth)
+watch -n 5 'docker exec pangolin ls -la /app/db/'
+
+# Look for db.sqlite-wal file size increasing
+```
+
+### Priority 3: Investigate /api/v1/user Endpoint
+- Check what queries it runs
+- Add caching if needed
+- This endpoint is called after every auth failure redirect
+
+### Priority 4: Test with Higher Memory Limit
+```yaml
+# docker-compose.yml
+services:
+  pangolin:
+    mem_limit: 600M  # Up from 400M
+```
+
+---
+
+## How to Use Feature Flags
+
+Add to docker-compose.yml `environment` section:
+
+```yaml
+environment:
+  # Disable features for testing (set to 'true' to disable)
+  - DISABLE_SESSION_QUERIES=true      # Returns "resource not found" immediately
+  - DISABLE_AUDIT_LOGGING=true        # Skips all audit log writes
+  - DISABLE_GEOIP_LOOKUP=true         # Skips MaxMind country lookup
+  - DISABLE_ASN_LOOKUP=true           # Skips MaxMind ASN lookup
+  - DISABLE_RULES_CHECK=true          # Skips rule evaluation
+  - DISABLE_ORG_ACCESS_POLICY=true    # Skips org policy checks
+```
+
+**Confirmed**: Only `DISABLE_SESSION_QUERIES=true` prevents the disk I/O issue.
+
+---
