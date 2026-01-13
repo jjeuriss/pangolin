@@ -15,6 +15,7 @@ import createHttpError from "http-errors";
 import { fromError } from "zod-validation-error";
 import logger from "@server/logger";
 import { build } from "@server/build";
+import cache from "@server/lib/cache";
 
 const getResourceAuthInfoSchema = z.strictObject({
     resourceGuid: z.string()
@@ -54,6 +55,22 @@ export async function getResourceAuthInfo(
         }
 
         const { resourceGuid } = parsedParams.data;
+
+        // Check cache first to avoid repeated database queries
+        const cacheKey = `resourceAuthInfo:${resourceGuid}`;
+        const cachedResult = cache.get<GetResourceAuthInfoResponse>(cacheKey);
+        if (cachedResult) {
+            logger.debug(`[getResourceAuthInfo] Cache hit for ${resourceGuid}`);
+            return response<GetResourceAuthInfoResponse>(res, {
+                data: cachedResult,
+                success: true,
+                error: false,
+                message: "Resource auth info retrieved successfully",
+                status: HttpCode.OK
+            });
+        }
+
+        logger.debug(`[getResourceAuthInfo] Cache miss for ${resourceGuid}, querying database`);
 
         const isGuidInteger = /^\d+$/.test(resourceGuid);
 
@@ -131,24 +148,29 @@ export async function getResourceAuthInfo(
 
         const url = `${resource.ssl ? "https" : "http"}://${resource.fullDomain}`;
 
+        const responseData: GetResourceAuthInfoResponse = {
+            niceId: resource.niceId,
+            resourceGuid: resource.resourceGuid,
+            resourceId: resource.resourceId,
+            resourceName: resource.name,
+            password: password !== null,
+            pincode: pincode !== null,
+            headerAuth: headerAuth !== null,
+            headerAuthExtendedCompatibility:
+                headerAuthExtendedCompatibility !== null,
+            sso: resource.sso,
+            blockAccess: resource.blockAccess,
+            url,
+            whitelist: resource.emailWhitelistEnabled,
+            skipToIdpId: resource.skipToIdpId,
+            orgId: resource.orgId
+        };
+
+        // Cache the result for 60 seconds to reduce database load
+        cache.set(cacheKey, responseData, 60);
+
         return response<GetResourceAuthInfoResponse>(res, {
-            data: {
-                niceId: resource.niceId,
-                resourceGuid: resource.resourceGuid,
-                resourceId: resource.resourceId,
-                resourceName: resource.name,
-                password: password !== null,
-                pincode: pincode !== null,
-                headerAuth: headerAuth !== null,
-                headerAuthExtendedCompatibility:
-                    headerAuthExtendedCompatibility !== null,
-                sso: resource.sso,
-                blockAccess: resource.blockAccess,
-                url,
-                whitelist: resource.emailWhitelistEnabled,
-                skipToIdpId: resource.skipToIdpId,
-                orgId: resource.orgId
-            },
+            data: responseData,
             success: true,
             error: false,
             message: "Resource auth info retrieved successfully",
