@@ -1,4 +1,5 @@
 import { Org, ResourceSession, Session, User } from "@server/db";
+import { isFeatureDisabled } from "@server/lib/featureFlags";
 
 export type CheckOrgAccessPolicyProps = {
     orgId?: string;
@@ -37,5 +38,10 @@ export async function enforceResourceSessionLength(
 export async function checkOrgAccessPolicy(
     props: CheckOrgAccessPolicyProps
 ): Promise<CheckOrgAccessPolicyResult> {
+    // DISK_IO_INVESTIGATION: Skip org access policy check when flag is set
+    if (isFeatureDisabled("DISABLE_ORG_ACCESS_POLICY")) {
+        return { allowed: true };
+    }
+
     return { allowed: true };
 }

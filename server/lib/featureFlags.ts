@@ -25,6 +25,8 @@ export const diskIOInvestigationFlags = {
         process.env.DISABLE_GEOIP_LOOKUP === "true",
     DISABLE_ASN_LOOKUP:
         process.env.DISABLE_ASN_LOOKUP === "true",
+    DISABLE_ORG_ACCESS_POLICY:
+        process.env.DISABLE_ORG_ACCESS_POLICY === "true",
 
     // Phase 2: Medium Suspicion
     DISABLE_LOG_CLEANUP:
