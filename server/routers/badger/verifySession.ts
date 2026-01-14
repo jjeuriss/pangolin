@@ -345,9 +345,15 @@ export async function verifyResourceSession(
             return allowed(res);
         }
 
-        const redirectPath = `/auth/resource/${encodeURIComponent(
-            resource.resourceGuid
-        )}?redirect=${encodeURIComponent(originalRequestURL)}`;
+        // REDIRECT_LOOP_FIX: Prevent infinite redirect loops when already on auth page
+        // If the request is already to an auth page, don't create another redirect
+        // This prevents URLs from growing exponentially and exhausting memory
+        const isAlreadyAuthPage = path.startsWith('/auth/resource/');
+        const redirectPath = isAlreadyAuthPage
+            ? undefined
+            : `/auth/resource/${encodeURIComponent(
+                resource.resourceGuid
+            )}?redirect=${encodeURIComponent(originalRequestURL)}`;
 
         // check for access token in headers
         if (
