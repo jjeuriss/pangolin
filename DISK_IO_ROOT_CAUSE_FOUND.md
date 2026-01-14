@@ -95,9 +95,9 @@ When session queries are **DISABLED** (problem NOT reproduced):
 - **Result**: Enabled systematic testing
 - **Impact**: Confirmed session queries as trigger
 
-### Fix 4: Increase Resource Cache TTL (Pending commit)
+### Fix 4: Increase Resource Cache TTL (Commit 96587485)
 - **Changed**: `getResourceByDomain()` cache TTL from 5 seconds to 60 seconds
-- **Location**: `server/routers/badger/verifySession.ts` line 224
+- **Location**: `server/routers/badger/verifySession.ts` line 225
 - **Result**: Reduces database queries from every 5 seconds to every 60 seconds per domain
 - **Impact**: Should significantly reduce SQLite load
 
@@ -237,6 +237,7 @@ Investigation commits in chronological order:
 | `6362ef81` | **Add memory profiler for leak investigation** |
 | `ede3ae40` | **Add caching to getResourceAuthInfo (60-second TTL)** |
 | `70140a78` | Update investigation findings document |
+| `96587485` | **Increase resource cache TTL from 5s to 60s** |
 
 **Key commits to reference:**
 - `cbe315c2` - Feature flags: `DISABLE_SESSION_QUERIES`, `DISABLE_AUDIT_LOGGING`, etc.
@@ -247,18 +248,13 @@ Investigation commits in chronological order:
 
 ## Suggested Next Steps (For New Session)
 
-### Priority 1: Increase Resource Cache TTL
-In `server/routers/badger/verifySession.ts` around line 221:
-```typescript
-// Current: 5 seconds
-cache.set(resourceCacheKey, resourceData, 5);
+### ✅ Priority 1: Increase Resource Cache TTL (COMPLETED - Commit 96587485)
+Changed `getResourceByDomain()` cache TTL from 5 seconds to 60 seconds in `server/routers/badger/verifySession.ts`.
 
-// Change to: 60 seconds
-cache.set(resourceCacheKey, resourceData, 60);
-```
-This reduces `getResourceByDomain()` database queries from every 5 seconds to every 60 seconds.
+### Priority 2: Test the Resource Cache TTL Fix
+Rebuild and redeploy, then run the Synology Photos load test to see if the increased cache TTL prevents or delays the disk I/O spike.
 
-### Priority 2: Monitor SQLite WAL During Test
+### Priority 3: Monitor SQLite WAL During Test
 ```bash
 # Before test
 docker exec pangolin ls -la /app/db/
@@ -269,12 +265,12 @@ watch -n 5 'docker exec pangolin ls -la /app/db/'
 # Look for db.sqlite-wal file size increasing
 ```
 
-### Priority 3: Investigate /api/v1/user Endpoint
+### Priority 4: Investigate /api/v1/user Endpoint
 - Check what queries it runs
 - Add caching if needed
 - This endpoint is called after every auth failure redirect
 
-### Priority 4: Test with Higher Memory Limit
+### Priority 5: Test with Higher Memory Limit
 ```yaml
 # docker-compose.yml
 services:
