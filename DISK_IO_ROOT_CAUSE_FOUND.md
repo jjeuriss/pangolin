@@ -151,7 +151,7 @@ When session queries are **DISABLED** (problem NOT reproduced):
 - **Result**: Reduces database queries from every 5 seconds to every 60 seconds per domain
 - **Impact**: Reduces SQLite load but does not fix redirect loop
 
-### Fix 5: 🎯 **CRITICAL FIX** - Prevent Redirect Loop (Pending commit)
+### Fix 5: 🎯 **CRITICAL FIX** - Prevent Redirect Loop (Commit 99cdbed2)
 - **Changed**: Detect when request path is already `/auth/resource/` and prevent recursive redirect
 - **Location**: `server/routers/badger/verifySession.ts` line 351-356
 - **Logic**:
@@ -299,23 +299,30 @@ Investigation commits in chronological order:
 | `ede3ae40` | **Add caching to getResourceAuthInfo (60-second TTL)** |
 | `70140a78` | Update investigation findings document |
 | `96587485` | **Increase resource cache TTL from 5s to 60s** |
+| `99cdbed2` | 🎯 **CRITICAL FIX: Prevent infinite redirect loop in auth flow** |
 
 **Key commits to reference:**
 - `cbe315c2` - Feature flags: `DISABLE_SESSION_QUERIES`, `DISABLE_AUDIT_LOGGING`, etc.
 - `6362ef81` - Memory profiler logs every 10 seconds
 - `ede3ae40` - getResourceAuthInfo caching fix
+- `99cdbed2` - 🎯 **THE FIX: Redirect loop prevention**
 
 ---
 
-## Suggested Next Steps (For New Session)
+## Suggested Next Steps
 
 ### ✅ Priority 1: Increase Resource Cache TTL (COMPLETED - Commit 96587485)
 Changed `getResourceByDomain()` cache TTL from 5 seconds to 60 seconds in `server/routers/badger/verifySession.ts`.
 
-### Priority 2: Test the Resource Cache TTL Fix
-Rebuild and redeploy, then run the Synology Photos load test to see if the increased cache TTL prevents or delays the disk I/O spike.
+### ✅ Priority 2: Fix Redirect Loop (COMPLETED - Commit 99cdbed2)
+Added logic to detect when request path is already `/auth/resource/` and prevent recursive redirect creation.
 
-### Priority 3: Monitor SQLite WAL During Test
+### 🔥 Priority 3: TEST THE FIX!
+Rebuild, redeploy, and run the Synology Photos load test. The redirect loop should now be prevented, and the VPS should remain stable.
+
+**Expected result**: No exponential URL growth, no memory exhaustion, no disk I/O spike, VPS stays responsive.
+
+### Priority 4: Monitor Logs During Test
 ```bash
 # Before test
 docker exec pangolin ls -la /app/db/
