@@ -221,7 +221,8 @@ export async function verifyResourceSession(
             }
 
             resourceData = result;
-            cache.set(resourceCacheKey, resourceData, 5);
+            // DISK_IO_INVESTIGATION: Increased from 5s to 60s to reduce database query frequency
+            cache.set(resourceCacheKey, resourceData, 60);
         }
 
         const {

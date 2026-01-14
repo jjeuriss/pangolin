@@ -95,6 +95,12 @@ When session queries are **DISABLED** (problem NOT reproduced):
 - **Result**: Enabled systematic testing
 - **Impact**: Confirmed session queries as trigger
 
+### Fix 4: Increase Resource Cache TTL (Pending commit)
+- **Changed**: `getResourceByDomain()` cache TTL from 5 seconds to 60 seconds
+- **Location**: `server/routers/badger/verifySession.ts` line 224
+- **Result**: Reduces database queries from every 5 seconds to every 60 seconds per domain
+- **Impact**: Should significantly reduce SQLite load
+
 ---
 
 ## Current Hypotheses
