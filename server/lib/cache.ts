@@ -1,12 +1,20 @@
 import NodeCache from "node-cache";
 import logger from "@server/logger";
 
-// Create cache with maxKeys limit to prevent memory leaks
-// With ~10k requests/day and 5min TTL, 10k keys should be more than sufficient
+// Create cache with conservative limits to reduce memory usage
+// - stdTTL: 5 minutes (reduced from 1 hour) - most cache lookups are repeated
+//   within minutes, so shorter TTL provides similar hit rates with lower memory
+// - maxKeys: 5000 (reduced from 10000) - sufficient for typical usage patterns
+// - useClones: false - avoids memory overhead of cloning cached objects
+//
+// WARNING: useClones is false for memory efficiency. All callers MUST treat
+// returned values as immutable. Mutating cached objects corrupts shared state
+// and affects all subsequent cache retrievals.
 export const cache = new NodeCache({
-    stdTTL: 3600,
-    checkperiod: 120,
-    maxKeys: 10000
+    stdTTL: 300,
+    checkperiod: 60,
+    maxKeys: 5000,
+    useClones: false
 });
 
 // Log cache statistics periodically for monitoring

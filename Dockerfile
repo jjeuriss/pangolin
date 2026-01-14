@@ -69,4 +69,9 @@ RUN chmod +x /usr/local/bin/pangctl ./dist/cli.mjs
 COPY server/db/names.json ./dist/names.json
 COPY public ./public
 
+# Set Node.js memory limits to prevent excessive memory usage
+# 384MB provides adequate headroom above the ~180-270MB baseline
+# (Next.js needs 150-200MB, plus Express servers and cache overhead)
+ENV NODE_OPTIONS="--max-old-space-size=384"
+
 CMD ["npm", "run", "start"]

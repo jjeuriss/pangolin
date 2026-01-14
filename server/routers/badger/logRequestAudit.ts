@@ -49,7 +49,9 @@ const auditLogBuffer: Array<{
 
 const BATCH_SIZE = 100; // Write to DB every 100 logs
 const BATCH_INTERVAL_MS = 5000; // Or every 5 seconds, whichever comes first
+const MAX_BUFFER_SIZE = 500; // Absolute maximum to prevent memory issues
 let flushTimer: NodeJS.Timeout | null = null;
+let droppedLogCount = 0; // Track total dropped logs for monitoring
 
 /**
  * Flush buffered logs to database
@@ -211,6 +213,18 @@ export async function logRequestAudit(
         const clientIp = body.requestIp
             ? stripPortFromHost(body.requestIp)
             : undefined;
+
+        // Prevent unbounded buffer growth - drop oldest entries if at max
+        if (auditLogBuffer.length >= MAX_BUFFER_SIZE) {
+            const dropped = auditLogBuffer.splice(
+                0,
+                auditLogBuffer.length - BATCH_SIZE
+            );
+            droppedLogCount += dropped.length;
+            logger.warn(
+                `Audit log buffer overflow - dropped ${dropped.length} entries (${droppedLogCount} total dropped)`
+            );
+        }
 
         // Add to buffer instead of writing directly to DB
         auditLogBuffer.push({

@@ -8,10 +8,16 @@ import { stripDuplicateSesions } from "./middlewares/stripDuplicateSessions";
 const nextPort = config.getRawConfig().server.next_port;
 
 export async function createNextServer() {
-    //   const app = next({ dev });
+    // Use NODE_ENV for production detection (standard Node.js convention)
+    // ENVIRONMENT is also checked for backwards compatibility
+    const isDev =
+        process.env.NODE_ENV !== "production" &&
+        process.env.ENVIRONMENT !== "prod";
+
     const app = next({
-        dev: process.env.ENVIRONMENT !== "prod",
-        turbopack: true
+        dev: isDev,
+        // Only use turbopack in development for faster builds
+        turbopack: isDev
     });
     const handle = app.getRequestHandler();
 

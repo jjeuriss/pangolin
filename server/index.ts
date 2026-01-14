@@ -23,6 +23,7 @@ import { initCleanup } from "#dynamic/cleanup";
 import license from "#dynamic/license/license";
 import { initLogCleanupInterval } from "@server/lib/cleanupLogs";
 import { fetchServerIp } from "@server/lib/serverIpService";
+import { startMemoryMonitor, logMemoryUsage } from "@server/lib/memoryMonitor";
 
 async function startServers() {
     await setHostMeta();
@@ -56,6 +57,14 @@ async function startServers() {
     }
 
     await initCleanup();
+
+    // Log initial memory usage after all servers are started
+    logMemoryUsage();
+
+    // Start memory monitoring in production (logs every 5 minutes)
+    if (process.env.ENVIRONMENT === "prod" || process.env.NODE_ENV === "production") {
+        startMemoryMonitor(5 * 60 * 1000);
+    }
 
     return {
         apiServer,
