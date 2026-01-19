@@ -288,7 +288,7 @@ export function selectBestExitNode(
     const validNodes = pingResults.filter((n) => !n.error && n.weight > 0);
 
     if (validNodes.length === 0) {
-        logger.error("No valid exit nodes available");
+        logger.debug("No valid exit nodes available");
         return null;
     }
 

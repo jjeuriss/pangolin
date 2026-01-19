@@ -24,7 +24,9 @@ export class LockManager {
      */
     async acquireLock(
         lockKey: string,
-        ttlMs: number = 30000
+        ttlMs: number = 30000,
+        maxRetries: number = 3,
+        retryDelayMs: number = 100
     ): Promise<boolean> {
         if (!redis || !redis.status || redis.status !== "ready") {
             return true;
@@ -35,49 +37,67 @@ export class LockManager {
         }:${Date.now()}`;
         const redisKey = `lock:${lockKey}`;
 
-        try {
-            // Use SET with NX (only set if not exists) and PX (expire in milliseconds)
-            // This is atomic and handles both setting and expiration
-            const result = await redis.set(
-                redisKey,
-                lockValue,
-                "PX",
-                ttlMs,
-                "NX"
-            );
-
-            if (result === "OK") {
-                logger.debug(
-                    `Lock acquired: ${lockKey} by ${
-                        config.getRawConfig().gerbil.exit_node_name
-                    }`
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                // Use SET with NX (only set if not exists) and PX (expire in milliseconds)
+                // This is atomic and handles both setting and expiration
+                const result = await redis.set(
+                    redisKey,
+                    lockValue,
+                    "PX",
+                    ttlMs,
+                    "NX"
                 );
-                return true;
-            }
 
-            // Check if the existing lock is from this worker (reentrant behavior)
-            const existingValue = await redis.get(redisKey);
-            if (
-                existingValue &&
-                existingValue.startsWith(
-                    `${config.getRawConfig().gerbil.exit_node_name}:`
-                )
-            ) {
-                // Extend the lock TTL since it's the same worker
-                await redis.pexpire(redisKey, ttlMs);
-                logger.debug(
-                    `Lock extended: ${lockKey} by ${
-                        config.getRawConfig().gerbil.exit_node_name
-                    }`
-                );
-                return true;
-            }
+                if (result === "OK") {
+                    logger.debug(
+                        `Lock acquired: ${lockKey} by ${
+                            config.getRawConfig().gerbil.exit_node_name
+                        }`
+                    );
+                    return true;
+                }
 
-            return false;
-        } catch (error) {
-            logger.error(`Failed to acquire lock ${lockKey}:`, error);
-            return false;
+                // Check if the existing lock is from this worker (reentrant behavior)
+                const existingValue = await redis.get(redisKey);
+                if (
+                    existingValue &&
+                    existingValue.startsWith(
+                        `${config.getRawConfig().gerbil.exit_node_name}:`
+                    )
+                ) {
+                    // Extend the lock TTL since it's the same worker
+                    await redis.pexpire(redisKey, ttlMs);
+                    logger.debug(
+                        `Lock extended: ${lockKey} by ${
+                            config.getRawConfig().gerbil.exit_node_name
+                        }`
+                    );
+                    return true;
+                }
+
+                // If this isn't our last attempt, wait before retrying with exponential backoff
+                if (attempt < maxRetries - 1) {
+                    const delay = retryDelayMs * Math.pow(2, attempt);
+                    logger.debug(
+                        `Lock ${lockKey} not available, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`
+                    );
+                    await new Promise((resolve) => setTimeout(resolve, delay));
+                }
+            } catch (error) {
+                logger.error(`Failed to acquire lock ${lockKey} (attempt ${attempt + 1}/${maxRetries}):`, error);
+                // On error, still retry if we have attempts left
+                if (attempt < maxRetries - 1) {
+                    const delay = retryDelayMs * Math.pow(2, attempt);
+                    await new Promise((resolve) => setTimeout(resolve, delay));
+                }
+            }
         }
+
+        logger.debug(
+            `Failed to acquire lock ${lockKey} after ${maxRetries} attempts`
+        );
+        return false;
     }
 
     /**

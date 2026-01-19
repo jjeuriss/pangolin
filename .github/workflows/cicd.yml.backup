@@ -329,89 +329,20 @@ jobs:
                   skopeo login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
               shell: bash
 
-            - name: Copy tags from Docker Hub to GHCR
-              # Mirror the already-built images (all architectures) to GHCR so we can sign them
+            - name: Copy tag from Docker Hub to GHCR
+              # Mirror the already-built image (all architectures) to GHCR so we can sign it
               # Wait a bit for both architectures to be available in Docker Hub manifest
               env:
                   REGISTRY_AUTH_FILE: ${{ runner.temp }}/containers/auth.json
               run: |
                   set -euo pipefail
                   TAG=${{ env.TAG }}
-                  MAJOR_TAG=$(echo $TAG | cut -d. -f1)
-                  MINOR_TAG=$(echo $TAG | cut -d. -f1,2)
-                  
-                  echo "Waiting for multi-arch manifests to be ready..."
+                  echo "Waiting for multi-arch manifest to be ready..."
                   sleep 30
-                  
-                  # Determine if this is an RC release
-                  IS_RC="false"
-                  if echo "$TAG" | grep -qE "rc[0-9]+$"; then
-                      IS_RC="true"
-                  fi
-                  
-                  if [ "$IS_RC" = "true" ]; then
-                      echo "RC release detected - copying version-specific tags only"
-                      
-                      # SQLite OSS
-                      echo "Copying ${{ env.DOCKERHUB_IMAGE }}:${TAG} -> ${{ env.GHCR_IMAGE }}:${TAG}"
-                      skopeo copy --all --retry-times 3 \
-                        docker://$DOCKERHUB_IMAGE:$TAG \
-                        docker://$GHCR_IMAGE:$TAG
-                      
-                      # PostgreSQL OSS
-                      echo "Copying ${{ env.DOCKERHUB_IMAGE }}:postgresql-${TAG} -> ${{ env.GHCR_IMAGE }}:postgresql-${TAG}"
-                      skopeo copy --all --retry-times 3 \
-                        docker://$DOCKERHUB_IMAGE:postgresql-$TAG \
-                        docker://$GHCR_IMAGE:postgresql-$TAG
-                      
-                      # SQLite Enterprise
-                      echo "Copying ${{ env.DOCKERHUB_IMAGE }}:ee-${TAG} -> ${{ env.GHCR_IMAGE }}:ee-${TAG}"
-                      skopeo copy --all --retry-times 3 \
-                        docker://$DOCKERHUB_IMAGE:ee-$TAG \
-                        docker://$GHCR_IMAGE:ee-$TAG
-                      
-                      # PostgreSQL Enterprise
-                      echo "Copying ${{ env.DOCKERHUB_IMAGE }}:ee-postgresql-${TAG} -> ${{ env.GHCR_IMAGE }}:ee-postgresql-${TAG}"
-                      skopeo copy --all --retry-times 3 \
-                        docker://$DOCKERHUB_IMAGE:ee-postgresql-$TAG \
-                        docker://$GHCR_IMAGE:ee-postgresql-$TAG
-                  else
-                      echo "Regular release detected - copying all tags (latest, major, minor, full version)"
-                      
-                      # SQLite OSS - all tags
-                      for TAG_SUFFIX in "latest" "$MAJOR_TAG" "$MINOR_TAG" "$TAG"; do
-                          echo "Copying ${{ env.DOCKERHUB_IMAGE }}:${TAG_SUFFIX} -> ${{ env.GHCR_IMAGE }}:${TAG_SUFFIX}"
-                          skopeo copy --all --retry-times 3 \
-                            docker://$DOCKERHUB_IMAGE:$TAG_SUFFIX \
-                            docker://$GHCR_IMAGE:$TAG_SUFFIX
-                      done
-                      
-                      # PostgreSQL OSS - all tags
-                      for TAG_SUFFIX in "latest" "$MAJOR_TAG" "$MINOR_TAG" "$TAG"; do
-                          echo "Copying ${{ env.DOCKERHUB_IMAGE }}:postgresql-${TAG_SUFFIX} -> ${{ env.GHCR_IMAGE }}:postgresql-${TAG_SUFFIX}"
-                          skopeo copy --all --retry-times 3 \
-                            docker://$DOCKERHUB_IMAGE:postgresql-$TAG_SUFFIX \
-                            docker://$GHCR_IMAGE:postgresql-$TAG_SUFFIX
-                      done
-                      
-                      # SQLite Enterprise - all tags
-                      for TAG_SUFFIX in "latest" "$MAJOR_TAG" "$MINOR_TAG" "$TAG"; do
-                          echo "Copying ${{ env.DOCKERHUB_IMAGE }}:ee-${TAG_SUFFIX} -> ${{ env.GHCR_IMAGE }}:ee-${TAG_SUFFIX}"
-                          skopeo copy --all --retry-times 3 \
-                            docker://$DOCKERHUB_IMAGE:ee-$TAG_SUFFIX \
-                            docker://$GHCR_IMAGE:ee-$TAG_SUFFIX
-                      done
-                      
-                      # PostgreSQL Enterprise - all tags
-                      for TAG_SUFFIX in "latest" "$MAJOR_TAG" "$MINOR_TAG" "$TAG"; do
-                          echo "Copying ${{ env.DOCKERHUB_IMAGE }}:ee-postgresql-${TAG_SUFFIX} -> ${{ env.GHCR_IMAGE }}:ee-postgresql-${TAG_SUFFIX}"
-                          skopeo copy --all --retry-times 3 \
-                            docker://$DOCKERHUB_IMAGE:ee-postgresql-$TAG_SUFFIX \
-                            docker://$GHCR_IMAGE:ee-postgresql-$TAG_SUFFIX
-                      done
-                  fi
-                  
-                  echo "All images copied successfully to GHCR!"
+                  echo "Copying ${{ env.DOCKERHUB_IMAGE }}:${TAG} -> ${{ env.GHCR_IMAGE }}:${TAG}"
+                  skopeo copy --all --retry-times 3 \
+                    docker://$DOCKERHUB_IMAGE:$TAG \
+                    docker://$GHCR_IMAGE:$TAG
               shell: bash
 
             - name: Login to GitHub Container Registry (for cosign)
@@ -440,62 +371,28 @@ jobs:
                   issuer="https://token.actions.githubusercontent.com"
                   id_regex="^https://github.com/${{ github.repository }}/.+"  # accept this repo (all workflows/refs)
 
-                  # Determine if this is an RC release
-                  IS_RC="false"
-                  if echo "$TAG" | grep -qE "rc[0-9]+$"; then
-                      IS_RC="true"
-                  fi
+                  for IMAGE in "${GHCR_IMAGE}" "${DOCKERHUB_IMAGE}"; do
+                    echo "Processing ${IMAGE}:${TAG}"
 
-                  # Define image variants to sign
-                  if [ "$IS_RC" = "true" ]; then
-                      echo "RC release - signing version-specific tags only"
-                      IMAGE_TAGS=(
-                          "${TAG}"
-                          "postgresql-${TAG}"
-                          "ee-${TAG}"
-                          "ee-postgresql-${TAG}"
-                      )
-                  else
-                      echo "Regular release - signing all tags"
-                      MAJOR_TAG=$(echo $TAG | cut -d. -f1)
-                      MINOR_TAG=$(echo $TAG | cut -d. -f1,2)
-                      IMAGE_TAGS=(
-                          "latest" "$MAJOR_TAG" "$MINOR_TAG" "$TAG"
-                          "postgresql-latest" "postgresql-$MAJOR_TAG" "postgresql-$MINOR_TAG" "postgresql-$TAG"
-                          "ee-latest" "ee-$MAJOR_TAG" "ee-$MINOR_TAG" "ee-$TAG"
-                          "ee-postgresql-latest" "ee-postgresql-$MAJOR_TAG" "ee-postgresql-$MINOR_TAG" "ee-postgresql-$TAG"
-                      )
-                  fi
+                    DIGEST="$(skopeo inspect --retry-times 3 docker://${IMAGE}:${TAG} | jq -r '.Digest')"
+                    REF="${IMAGE}@${DIGEST}"
+                    echo "Resolved digest: ${REF}"
 
-                  # Sign each image variant for both registries
-                  for BASE_IMAGE in "${GHCR_IMAGE}" "${DOCKERHUB_IMAGE}"; do
-                    for IMAGE_TAG in "${IMAGE_TAGS[@]}"; do
-                      echo "Processing ${BASE_IMAGE}:${IMAGE_TAG}"
+                    echo "==> cosign sign (keyless) --recursive ${REF}"
+                    cosign sign --recursive "${REF}"
 
-                      DIGEST="$(skopeo inspect --retry-times 3 docker://${BASE_IMAGE}:${IMAGE_TAG} | jq -r '.Digest')"
-                      REF="${BASE_IMAGE}@${DIGEST}"
-                      echo "Resolved digest: ${REF}"
+                    echo "==> cosign sign (key) --recursive ${REF}"
+                    cosign sign --key env://COSIGN_PRIVATE_KEY --recursive "${REF}"
 
-                      echo "==> cosign sign (keyless) --recursive ${REF}"
-                      cosign sign --recursive "${REF}"
+                    echo "==> cosign verify (public key) ${REF}"
+                    cosign verify --key env://COSIGN_PUBLIC_KEY "${REF}" -o text
 
-                      echo "==> cosign sign (key) --recursive ${REF}"
-                      cosign sign --key env://COSIGN_PRIVATE_KEY --recursive "${REF}"
-
-                      echo "==> cosign verify (public key) ${REF}"
-                      cosign verify --key env://COSIGN_PUBLIC_KEY "${REF}" -o text
-
-                      echo "==> cosign verify (keyless policy) ${REF}"
-                      cosign verify \
-                        --certificate-oidc-issuer "${issuer}" \
-                        --certificate-identity-regexp "${id_regex}" \
-                        "${REF}" -o text
-                      
-                      echo "✓ Successfully signed and verified ${BASE_IMAGE}:${IMAGE_TAG}"
-                    done
+                    echo "==> cosign verify (keyless policy) ${REF}"
+                    cosign verify \
+                      --certificate-oidc-issuer "${issuer}" \
+                      --certificate-identity-regexp "${id_regex}" \
+                      "${REF}" -o text
                   done
-                  
-                  echo "All images signed and verified successfully!"
               shell: bash
 
     post-run:
