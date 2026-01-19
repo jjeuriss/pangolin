@@ -56,7 +56,8 @@ export default async function ResourceAuthPage(props: {
         }
     } catch (e) {}
 
-    const user = await verifySession({ skipCheckVerifyEmail: true });
+    const getUser = cache(verifySession);
+    const user = await getUser({ skipCheckVerifyEmail: true });
 
     if (!authInfo) {
         return (
