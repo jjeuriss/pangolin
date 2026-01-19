@@ -139,12 +139,15 @@ export async function verifyResourceSession(
     res: Response,
     next: NextFunction
 ): Promise<any> {
+    const requestStartTime = performance.now();
     incrementRequestCount(); // Track for memory profiling
     logger.debug("Verify session: Badger sent", req.body); // remove when done testing
+    logger.debug(`[BADGER_VERIFY] REQUEST START - host=${req.body?.host}, path=${req.body?.path}, authenticated=${!!req.body?.sessions}`);
 
     const parsedBody = verifyResourceSessionSchema.safeParse(req.body);
 
     if (!parsedBody.success) {
+        logger.debug(`[BADGER_VERIFY] REQUEST FAILED - validation error`);
         return next(
             createHttpError(
                 HttpCode.BAD_REQUEST,
@@ -200,10 +203,11 @@ export async function verifyResourceSession(
             | undefined = cache.get(resourceCacheKey);
 
         if (!resourceData) {
+            logger.debug(`[BADGER_VERIFY] CACHE MISS - resourceCacheKey=${resourceCacheKey}, fetching from database`);
             const result = await getResourceByDomain(cleanHost);
 
             if (!result) {
-                logger.debug(`Resource not found ${cleanHost}`);
+                logger.debug(`[BADGER_VERIFY] RESOURCE NOT FOUND - host=${cleanHost}`);
 
                 // TODO: we cant log this for now because we dont know the org
                 // eventually it would be cool to show this for the server admin
@@ -222,7 +226,10 @@ export async function verifyResourceSession(
 
             resourceData = result;
             // DISK_IO_INVESTIGATION: Increased from 5s to 60s to reduce database query frequency
+            logger.debug(`[BADGER_VERIFY] CACHE SET - resourceCacheKey=${resourceCacheKey}, ttl=60s, resourceId=${result.resource?.resourceId}`);
             cache.set(resourceCacheKey, resourceData, 60);
+        } else {
+            logger.debug(`[BADGER_VERIFY] CACHE HIT - resourceCacheKey=${resourceCacheKey}, resourceId=${resourceData.resource?.resourceId}`);
         }
 
         const {
@@ -1032,20 +1039,27 @@ async function checkRules(
 ): Promise<"ACCEPT" | "DROP" | "PASS" | undefined> {
     // DISK_IO_INVESTIGATION: Skip rules check when flag is set
     if (isFeatureDisabled("DISABLE_RULES_CHECK")) {
+        logger.debug(`[CHECK_RULES] SKIPPED - DISABLE_RULES_CHECK=true, resourceId=${resourceId}`);
         return undefined;
     }
+
+    logger.debug(`[CHECK_RULES] START - resourceId=${resourceId}, clientIp=${clientIp}, path=${path}`);
 
     const ruleCacheKey = `rules:${resourceId}`;
 
     let rules: ResourceRule[] | undefined = cache.get(ruleCacheKey);
 
     if (!rules) {
+        logger.debug(`[CHECK_RULES] CACHE MISS - fetching rules from database, resourceId=${resourceId}`);
         rules = await getResourceRules(resourceId);
+        logger.debug(`[CHECK_RULES] CACHE SET - ruleCacheKey=${ruleCacheKey}, ttl=5s, rulesCount=${rules.length}`);
         cache.set(ruleCacheKey, rules, 5);
+    } else {
+        logger.debug(`[CHECK_RULES] CACHE HIT - ruleCacheKey=${ruleCacheKey}, rulesCount=${rules.length}`);
     }
 
     if (rules.length === 0) {
-        logger.debug("No rules found for resource", resourceId);
+        logger.debug(`[CHECK_RULES] NO RULES - resourceId=${resourceId}`);
         return;
     }
 

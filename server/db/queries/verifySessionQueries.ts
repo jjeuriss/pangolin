@@ -48,6 +48,9 @@ export async function getResourceByDomain(
         return null;
     }
 
+    logger.debug(`[DB_QUERY] getResourceByDomain START - domain=${domain}`);
+    const startTime = performance.now();
+
     const [result] = await db
         .select()
         .from(resources)
@@ -74,6 +77,9 @@ export async function getResourceByDomain(
         .where(eq(resources.fullDomain, domain))
         .limit(1);
 
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getResourceByDomain END - domain=${domain}, duration=${duration.toFixed(2)}ms, found=${!!result}`);
+
     if (!result) {
         return null;
     }
@@ -99,11 +105,17 @@ export async function getUserSessionWithUser(
         return null;
     }
 
+    logger.debug(`[DB_QUERY] getUserSessionWithUser START - sessionId=${userSessionId}`);
+    const startTime = performance.now();
+
     const [res] = await db
         .select()
         .from(sessions)
         .leftJoin(users, eq(users.userId, sessions.userId))
         .where(eq(sessions.sessionId, userSessionId));
+
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getUserSessionWithUser END - sessionId=${userSessionId}, duration=${duration.toFixed(2)}ms, found=${!!res}`);
 
     if (!res) {
         return null;
@@ -123,11 +135,17 @@ export async function getUserOrgRole(userId: string, orgId: string) {
         return null;
     }
 
+    logger.debug(`[DB_QUERY] getUserOrgRole START - userId=${userId}, orgId=${orgId}`);
+    const startTime = performance.now();
+
     const userOrgRole = await db
         .select()
         .from(userOrgs)
         .where(and(eq(userOrgs.userId, userId), eq(userOrgs.orgId, orgId)))
         .limit(1);
+
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getUserOrgRole END - userId=${userId}, orgId=${orgId}, duration=${duration.toFixed(2)}ms, found=${userOrgRole.length > 0}`);
 
     return userOrgRole.length > 0 ? userOrgRole[0] : null;
 }
@@ -143,6 +161,9 @@ export async function getRoleResourceAccess(
         return null;
     }
 
+    logger.debug(`[DB_QUERY] getRoleResourceAccess START - resourceId=${resourceId}, roleId=${roleId}`);
+    const startTime = performance.now();
+
     const roleResourceAccess = await db
         .select()
         .from(roleResources)
@@ -153,6 +174,9 @@ export async function getRoleResourceAccess(
             )
         )
         .limit(1);
+
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getRoleResourceAccess END - resourceId=${resourceId}, roleId=${roleId}, duration=${duration.toFixed(2)}ms, found=${roleResourceAccess.length > 0}`);
 
     return roleResourceAccess.length > 0 ? roleResourceAccess[0] : null;
 }
@@ -168,6 +192,9 @@ export async function getUserResourceAccess(
         return null;
     }
 
+    logger.debug(`[DB_QUERY] getUserResourceAccess START - userId=${userId}, resourceId=${resourceId}`);
+    const startTime = performance.now();
+
     const userResourceAccess = await db
         .select()
         .from(userResources)
@@ -178,6 +205,9 @@ export async function getUserResourceAccess(
             )
         )
         .limit(1);
+
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getUserResourceAccess END - userId=${userId}, resourceId=${resourceId}, duration=${duration.toFixed(2)}ms, found=${userResourceAccess.length > 0}`);
 
     return userResourceAccess.length > 0 ? userResourceAccess[0] : null;
 }
@@ -192,10 +222,16 @@ export async function getResourceRules(
         return [];
     }
 
+    logger.debug(`[DB_QUERY] getResourceRules START - resourceId=${resourceId}`);
+    const startTime = performance.now();
+
     const rules = await db
         .select()
         .from(resourceRules)
         .where(eq(resourceRules.resourceId, resourceId));
+
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getResourceRules END - resourceId=${resourceId}, duration=${duration.toFixed(2)}ms, rulesCount=${rules.length}`);
 
     return rules;
 }
@@ -210,6 +246,9 @@ export async function getOrgLoginPage(
         return null;
     }
 
+    logger.debug(`[DB_QUERY] getOrgLoginPage START - orgId=${orgId}`);
+    const startTime = performance.now();
+
     const [result] = await db
         .select()
         .from(loginPageOrg)
@@ -219,6 +258,9 @@ export async function getOrgLoginPage(
             eq(loginPageOrg.loginPageId, loginPage.loginPageId)
         )
         .limit(1);
+
+    const duration = performance.now() - startTime;
+    logger.debug(`[DB_QUERY] getOrgLoginPage END - orgId=${orgId}, duration=${duration.toFixed(2)}ms, found=${!!result}`);
 
     if (!result) {
         return null;

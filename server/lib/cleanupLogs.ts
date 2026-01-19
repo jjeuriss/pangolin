@@ -3,10 +3,17 @@ import { cleanUpOldLogs as cleanUpOldAccessLogs } from "#dynamic/lib/logAccessAu
 import { cleanUpOldLogs as cleanUpOldActionLogs } from "#dynamic/middlewares/logActionAudit";
 import { cleanUpOldLogs as cleanUpOldRequestLogs } from "@server/routers/badger/logRequestAudit";
 import { gt, or } from "drizzle-orm";
+import logger from "@server/logger";
 
 export function initLogCleanupInterval() {
+    logger.debug(`[LOG_CLEANUP] Initializing log cleanup interval (every 3 hours)`);
     return setInterval(
         async () => {
+            const cleanupStartTime = performance.now();
+            logger.debug(`[LOG_CLEANUP] ===== LOG CLEANUP STARTED =====`);
+
+            logger.debug(`[LOG_CLEANUP] Querying orgs with retention policies`);
+            const queryStartTime = performance.now();
             const orgsToClean = await db
                 .select({
                     orgId: orgs.orgId,
@@ -25,6 +32,8 @@ export function initLogCleanupInterval() {
                         gt(orgs.settingsLogRetentionDaysRequest, 0)
                     )
                 );
+            const queryDuration = performance.now() - queryStartTime;
+            logger.debug(`[LOG_CLEANUP] Found ${orgsToClean.length} orgs to clean, query took ${queryDuration.toFixed(2)}ms`);
 
             for (const org of orgsToClean) {
                 const {
@@ -34,27 +43,44 @@ export function initLogCleanupInterval() {
                     settingsLogRetentionDaysRequest
                 } = org;
 
+                logger.debug(`[LOG_CLEANUP] Cleaning logs for orgId=${orgId}, retentionDays: action=${settingsLogRetentionDaysAction}, access=${settingsLogRetentionDaysAccess}, request=${settingsLogRetentionDaysRequest}`);
+
                 if (settingsLogRetentionDaysAction > 0) {
+                    const actionStartTime = performance.now();
+                    logger.debug(`[LOG_CLEANUP] Cleaning action logs for orgId=${orgId}, retentionDays=${settingsLogRetentionDaysAction}`);
                     await cleanUpOldActionLogs(
                         orgId,
                         settingsLogRetentionDaysAction
                     );
+                    const actionDuration = performance.now() - actionStartTime;
+                    logger.debug(`[LOG_CLEANUP] Cleaned action logs for orgId=${orgId}, took ${actionDuration.toFixed(2)}ms`);
                 }
 
                 if (settingsLogRetentionDaysAccess > 0) {
+                    const accessStartTime = performance.now();
+                    logger.debug(`[LOG_CLEANUP] Cleaning access logs for orgId=${orgId}, retentionDays=${settingsLogRetentionDaysAccess}`);
                     await cleanUpOldAccessLogs(
                         orgId,
                         settingsLogRetentionDaysAccess
                     );
+                    const accessDuration = performance.now() - accessStartTime;
+                    logger.debug(`[LOG_CLEANUP] Cleaned access logs for orgId=${orgId}, took ${accessDuration.toFixed(2)}ms`);
                 }
 
                 if (settingsLogRetentionDaysRequest > 0) {
+                    const requestStartTime = performance.now();
+                    logger.debug(`[LOG_CLEANUP] Cleaning request logs for orgId=${orgId}, retentionDays=${settingsLogRetentionDaysRequest}`);
                     await cleanUpOldRequestLogs(
                         orgId,
                         settingsLogRetentionDaysRequest
                     );
+                    const requestDuration = performance.now() - requestStartTime;
+                    logger.debug(`[LOG_CLEANUP] Cleaned request logs for orgId=${orgId}, took ${requestDuration.toFixed(2)}ms`);
                 }
             }
+
+            const cleanupDuration = performance.now() - cleanupStartTime;
+            logger.debug(`[LOG_CLEANUP] ===== LOG CLEANUP COMPLETED ===== Total duration: ${cleanupDuration.toFixed(2)}ms`);
         },
         3 * 60 * 60 * 1000
     ); // every 3 hours

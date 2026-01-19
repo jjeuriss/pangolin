@@ -104,19 +104,26 @@ async function flushAuditLogs(retryCount = 0, maxRetries = 3) {
     // Take all current logs and clear buffer
     const logsToWrite = auditLogBuffer.splice(0, auditLogBuffer.length);
     const logCount = logsToWrite.length;
+    const flushStartTime = performance.now();
+
+    logger.debug(`[AUDIT_LOG_FLUSH] START - flushing ${logCount} logs to database, retryCount=${retryCount}`);
 
     try {
         // Batch insert all logs at once
+        const insertStartTime = performance.now();
         await db.insert(requestAuditLog).values(logsToWrite);
-        logger.debug(`Flushed ${logCount} audit logs to database`);
-        
+        const insertDuration = performance.now() - insertStartTime;
+        const flushDuration = performance.now() - flushStartTime;
+        logger.debug(`[AUDIT_LOG_FLUSH] SUCCESS - flushed ${logCount} logs, insertDuration=${insertDuration.toFixed(2)}ms, totalDuration=${flushDuration.toFixed(2)}ms`);
+
         // Reset failed flush counter on success
         if (failedFlushCount > 0) {
             logger.info(`Audit log flushing recovered after ${failedFlushCount} failed attempts`);
             failedFlushCount = 0;
         }
     } catch (error) {
-        logger.error("Error flushing audit logs:", error);
+        const flushDuration = performance.now() - flushStartTime;
+        logger.error(`[AUDIT_LOG_FLUSH] ERROR - failed to flush ${logCount} logs after ${flushDuration.toFixed(2)}ms:`, error);
         failedFlushCount++;
         
         // Retry with exponential backoff if we haven't exceeded max retries
@@ -211,9 +218,12 @@ async function getRetentionDays(orgId: string): Promise<number> {
 
 export async function cleanUpOldLogs(orgId: string, retentionDays: number) {
     const cutoffTimestamp = calculateCutoffTimestamp(retentionDays);
+    const deleteStartTime = performance.now();
+
+    logger.debug(`[REQUEST_AUDIT_CLEANUP] START - orgId=${orgId}, retentionDays=${retentionDays}, cutoffTimestamp=${cutoffTimestamp}`);
 
     try {
-        await db
+        const result = await db
             .delete(requestAuditLog)
             .where(
                 and(
@@ -222,11 +232,11 @@ export async function cleanUpOldLogs(orgId: string, retentionDays: number) {
                 )
             );
 
-        // logger.debug(
-        //     `Cleaned up request audit logs older than ${retentionDays} days`
-        // );
+        const deleteDuration = performance.now() - deleteStartTime;
+        logger.debug(`[REQUEST_AUDIT_CLEANUP] COMPLETED - orgId=${orgId}, duration=${deleteDuration.toFixed(2)}ms, deletedRows=${(result as any)?.rowsAffected || 'unknown'}`);
     } catch (error) {
-        logger.error("Error cleaning up old request audit logs:", error);
+        const deleteDuration = performance.now() - deleteStartTime;
+        logger.error(`[REQUEST_AUDIT_CLEANUP] ERROR - orgId=${orgId}, duration=${deleteDuration.toFixed(2)}ms, error:`, error);
     }
 }
 
