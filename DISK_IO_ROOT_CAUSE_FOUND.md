@@ -1,19 +1,32 @@
-# Disk I/O Investigation - ROOT CAUSE FOUND!
+# Disk I/O Investigation - ONGOING
 
-**Status**: ✅ ROOT CAUSE IDENTIFIED - Redirect loop bug
+**Status**: ⚠️ PROBLEM STILL PERSISTS - Investigating with comprehensive logging
 **Date**: 2026-01-13
-**Last Updated**: 2026-01-14 07:30 UTC
-**Resolution**: Fixed redirect loop in verifySession.ts
+**Last Updated**: 2026-01-19 20:05 UTC
+**Current Strategy**: Added DEBUG logging to identify exact operation causing I/O spikes
 
 ---
 
 ## Executive Summary
 
-**ROOT CAUSE IDENTIFIED**: Infinite **redirect loop** causing exponential URL growth and memory exhaustion.
+**ISSUE**: High disk I/O and memory usage during unauthenticated request bursts (regression since v1.13.0).
 
-When unauthenticated requests hit `/auth/resource/GUID`, the code creates a redirect containing the original URL. But since the redirect target is ALSO `/auth/resource/GUID`, it creates another redirect with the previous redirect nested inside. URLs grow exponentially: after N iterations, a URL can be megabytes in size, eventually exhausting memory and causing disk I/O spikes as the system thrashes.
+**SYMPTOMS**:
+- VPS becomes unresponsive after 5-10 minutes of high-volume unauthenticated requests (50+ req/sec)
+- Disk read I/O spikes to 100% utilization
+- Memory usage climbs steadily until system thrashes
+- Problem is 100% reproducible with Synology Photos making thumbnail requests
 
-**The Fix**: Detect when the request path is already `/auth/resource/` and prevent creating recursive redirects (commit pending).
+**PREVIOUS THEORY (DISPROVEN)**: Infinite redirect loop causing exponential URL growth.
+- Fixed in commit 99cdbed2 by preventing `/auth/resource/` pages from redirecting to themselves
+- **Result**: Problem still persists after fix, so redirect loop was not the root cause
+
+**NEW STRATEGY**: Comprehensive DEBUG logging added (commit 6754a9f1) to identify exact operation causing I/O spikes.
+
+**PRIME SUSPECTS** (based on v1.12.3 → v1.13.0 code analysis):
+1. 🔴 **Audit log batching system** - High-volume requests trigger frequent batch inserts (every 2-5 seconds)
+2. 🟡 **Log cleanup bug fix** - More cleanup operations now run correctly, could cause large DELETE operations
+3. 🟢 **Retention query cache stampede** - Multiple concurrent retention checks during high load
 
 ---
 
@@ -164,6 +177,262 @@ When session queries are **DISABLED** (problem NOT reproduced):
 
 ---
 
+## 🔍 NEW STRATEGY: Comprehensive DEBUG Logging (Commit 6754a9f1)
+
+**Date**: 2026-01-19
+**Status**: ⚠️ PROBLEM STILL PERSISTS - Redirect loop fix did not resolve the issue
+**New Approach**: Add granular logging to identify the exact operation causing I/O spikes
+
+### Why More Logging?
+
+Despite fixing the redirect loop and increasing cache TTLs, the disk I/O problem continues to occur during high-volume unauthenticated request testing. The issue must be caused by:
+1. A scheduled background task that triggers during the 5-10 minute window
+2. Database operations accumulating and causing batch operations
+3. A code path introduced in v1.13.0 that we haven't identified yet
+
+### Code Analysis: v1.12.3 → v1.13.0 Changes
+
+Critical changes that could explain the regression:
+
+#### 🔴 **SUSPECT #1: Audit Log Batching System (HIGH PROBABILITY)**
+In v1.13.0, audit logging was completely rewritten from immediate writes to a batching system:
+
+**Old behavior (v1.12.3)**:
+```typescript
+// Each request wrote directly to database
+await db.insert(requestAuditLog).values({...});
+```
+
+**New behavior (v1.13.0)**:
+```typescript
+// Logs buffer in memory (100 logs or 5 seconds)
+auditLogBuffer.push({...});
+if (auditLogBuffer.length >= 100) {
+    flushAuditLogs(); // Batch insert
+}
+scheduleFlush(); // Or flush after 5 seconds
+```
+
+**Why this is suspicious**:
+- High-volume unauthenticated requests (50+ req/sec) fill the buffer rapidly
+- Buffer flushes trigger batch INSERT operations every ~2 seconds
+- Batch inserts of 100+ rows could cause I/O spikes
+- Timing aligns with 5-second flush interval and 5-10 minute accumulation
+
+#### 🟡 **SUSPECT #2: Log Cleanup Bug Fix (MEDIUM PROBABILITY)**
+In v1.12.3, there was a bug where all cleanup functions used `settingsLogRetentionDaysRequest`:
+
+```typescript
+// v1.12.3 - BUG: all used wrong retention setting
+cleanUpOldActionLogs(orgId, settingsLogRetentionDaysRequest);
+cleanUpOldAccessLogs(orgId, settingsLogRetentionDaysRequest);
+cleanUpOldRequestLogs(orgId, settingsLogRetentionDaysRequest);
+```
+
+In v1.13.0, this was fixed:
+
+```typescript
+// v1.13.0 - FIXED: each uses correct retention
+cleanUpOldActionLogs(orgId, settingsLogRetentionDaysAction);
+cleanUpOldAccessLogs(orgId, settingsLogRetentionDaysAccess);
+cleanUpOldRequestLogs(orgId, settingsLogRetentionDaysRequest);
+```
+
+**Why this is suspicious**:
+- More cleanup operations now run (one per log type instead of all using same setting)
+- Cleanup interval is every 3 hours
+- If the test happens to hit the 3-hour mark, large DELETE operations could cause I/O spike
+- Special retention value 9001 added (year-based cleanup) could trigger massive deletes
+
+#### 🟢 **SUSPECT #3: Retention Query Cache Stampede (LOW PROBABILITY)**
+The batching system checks retention settings for each org, which could cause:
+- Multiple concurrent checks for the same org (cache stampede)
+- Frequent database queries during high request volume
+- Already has mitigation (`inflightRetentionChecks`) but may not be sufficient
+
+### Logging Strategy
+
+Added comprehensive DEBUG logging with performance timing to all critical paths:
+
+#### 1. Database Query Operations
+**File**: `server/db/queries/verifySessionQueries.ts`
+**Prefix**: `[DB_QUERY]`
+
+Logs all 7 query functions called during unauthenticated requests:
+```
+[DB_QUERY] getResourceByDomain START - domain=photo.example.com
+[DB_QUERY] getResourceByDomain END - domain=photo.example.com, duration=2.45ms, found=true
+[DB_QUERY] getResourceRules START - resourceId=123
+[DB_QUERY] getResourceRules END - resourceId=123, duration=1.23ms, rulesCount=5
+[DB_QUERY] getUserSessionWithUser START - sessionId=abc123
+[DB_QUERY] getUserSessionWithUser END - sessionId=abc123, duration=1.89ms, found=true
+[DB_QUERY] getUserOrgRole START - userId=user1, orgId=org1
+[DB_QUERY] getUserOrgRole END - userId=user1, orgId=org1, duration=1.12ms, found=true
+[DB_QUERY] getRoleResourceAccess START - resourceId=123, roleId=456
+[DB_QUERY] getRoleResourceAccess END - resourceId=123, roleId=456, duration=0.98ms, found=true
+[DB_QUERY] getUserResourceAccess START - userId=user1, resourceId=123
+[DB_QUERY] getUserResourceAccess END - userId=user1, resourceId=123, duration=0.87ms, found=false
+[DB_QUERY] getOrgLoginPage START - orgId=org1
+[DB_QUERY] getOrgLoginPage END - orgId=org1, duration=1.34ms, found=true
+```
+
+#### 2. Badger Request Verification Flow
+**File**: `server/routers/badger/verifySession.ts`
+**Prefix**: `[BADGER_VERIFY]`
+
+Logs cache behavior and request flow:
+```
+[BADGER_VERIFY] REQUEST START - host=photo.example.com, path=/thumbnail.jpg, authenticated=false
+[BADGER_VERIFY] CACHE MISS - resourceCacheKey=resource:photo.example.com, fetching from database
+[BADGER_VERIFY] CACHE SET - resourceCacheKey=resource:photo.example.com, ttl=60s, resourceId=123
+[BADGER_VERIFY] CACHE HIT - resourceCacheKey=resource:photo.example.com, resourceId=123
+```
+
+#### 3. Rules Checking
+**File**: `server/routers/badger/verifySession.ts`
+**Prefix**: `[CHECK_RULES]`
+
+Logs rule evaluation with cache behavior:
+```
+[CHECK_RULES] START - resourceId=123, clientIp=192.168.1.1, path=/thumbnail.jpg
+[CHECK_RULES] CACHE MISS - fetching rules from database, resourceId=123
+[CHECK_RULES] CACHE SET - ruleCacheKey=rules:123, ttl=5s, rulesCount=5
+[CHECK_RULES] CACHE HIT - ruleCacheKey=rules:123, rulesCount=5
+```
+
+#### 4. Audit Log Batch Flushing
+**File**: `server/routers/badger/logRequestAudit.ts`
+**Prefix**: `[AUDIT_LOG_FLUSH]`
+
+Logs batch insert operations with timing:
+```
+[AUDIT_LOG_FLUSH] START - flushing 100 logs to database, retryCount=0
+[AUDIT_LOG_FLUSH] SUCCESS - flushed 100 logs, insertDuration=45.23ms, totalDuration=47.89ms
+[AUDIT_LOG_FLUSH] ERROR - failed to flush 100 logs after 523.45ms: [error details]
+```
+
+#### 5. Log Cleanup Operations
+**File**: `server/lib/cleanupLogs.ts`
+**Prefix**: `[LOG_CLEANUP]`
+
+Logs scheduled cleanup (every 3 hours):
+```
+[LOG_CLEANUP] ===== LOG CLEANUP STARTED =====
+[LOG_CLEANUP] Querying orgs with retention policies
+[LOG_CLEANUP] Found 3 orgs to clean, query took 5.67ms
+[LOG_CLEANUP] Cleaning logs for orgId=org1, retentionDays: action=30, access=30, request=7
+[LOG_CLEANUP] Cleaning action logs for orgId=org1, retentionDays=30
+[LOG_CLEANUP] Cleaned action logs for orgId=org1, took 234.56ms
+[LOG_CLEANUP] Cleaning access logs for orgId=org1, retentionDays=30
+[LOG_CLEANUP] Cleaned access logs for orgId=org1, took 189.23ms
+[LOG_CLEANUP] Cleaning request logs for orgId=org1, retentionDays=7
+[LOG_CLEANUP] Cleaned request logs for orgId=org1, took 567.89ms
+[LOG_CLEANUP] ===== LOG CLEANUP COMPLETED ===== Total duration: 1234.56ms
+```
+
+#### 6. Request Audit Cleanup
+**File**: `server/routers/badger/logRequestAudit.ts`
+**Prefix**: `[REQUEST_AUDIT_CLEANUP]`
+
+Logs delete operations with row counts:
+```
+[REQUEST_AUDIT_CLEANUP] START - orgId=org1, retentionDays=7, cutoffTimestamp=1234567890
+[REQUEST_AUDIT_CLEANUP] COMPLETED - orgId=org1, duration=567.89ms, deletedRows=15234
+[REQUEST_AUDIT_CLEANUP] ERROR - orgId=org1, duration=823.45ms, error: [details]
+```
+
+### How to Use the Logs
+
+When reproducing the issue with unauthenticated request bursts:
+
+#### 1. Filter for All Debug Logs
+```bash
+docker logs pangolin 2>&1 | grep -E "\[DB_QUERY\]|\[BADGER_VERIFY\]|\[AUDIT_LOG_FLUSH\]|\[LOG_CLEANUP\]|\[REQUEST_AUDIT_CLEANUP\]|\[CHECK_RULES\]"
+```
+
+#### 2. Look for These Patterns During I/O Spike
+
+**Pattern A: Frequent Audit Flushes**
+```bash
+# Should see flushes every ~5 seconds or every 100 requests
+docker logs pangolin 2>&1 | grep "\[AUDIT_LOG_FLUSH\]" | tail -50
+```
+- **RED FLAG**: Flush duration >100ms consistently
+- **RED FLAG**: Many ERROR entries indicating failed flushes
+- **RED FLAG**: Flush frequency <2 seconds (buffer filling too fast)
+
+**Pattern B: Cleanup Operations**
+```bash
+# Check if cleanup happens during test window (every 3 hours)
+docker logs pangolin 2>&1 | grep "\[LOG_CLEANUP\]"
+```
+- **RED FLAG**: Cleanup starts around the time of I/O spike
+- **RED FLAG**: Individual cleanup operations taking >1 second
+- **RED FLAG**: Large number of deleted rows (>10,000)
+
+**Pattern C: Cache Behavior**
+```bash
+# Should see mostly cache hits after initial requests
+docker logs pangolin 2>&1 | grep "CACHE" | tail -100
+```
+- **RED FLAG**: Excessive CACHE MISS entries (cache not working)
+- **RED FLAG**: Cache keys expiring too quickly
+
+**Pattern D: Slow Database Queries**
+```bash
+# All queries should be <10ms with proper indexing
+docker logs pangolin 2>&1 | grep "\[DB_QUERY\]" | grep "duration="
+```
+- **RED FLAG**: Any query taking >50ms
+- **RED FLAG**: getResourceByDomain taking >10ms (5-table join)
+
+#### 3. Timeline Analysis
+
+Create a timeline of what happens during the 5-10 minute window:
+
+```bash
+# Get all debug logs with timestamps
+docker logs pangolin 2>&1 --timestamps | grep -E "\[DB_QUERY\]|\[BADGER_VERIFY\]|\[AUDIT_LOG_FLUSH\]|\[LOG_CLEANUP\]|\[REQUEST_AUDIT_CLEANUP\]|\[CHECK_RULES\]" > debug_timeline.log
+```
+
+Then analyze:
+1. What operation is running when I/O spike begins?
+2. Is it a scheduled task (LOG_CLEANUP)?
+3. Is it accumulation of audit flushes?
+4. Is it a specific query pattern?
+
+### Expected Findings
+
+Based on the code analysis, we expect to find:
+
+**Most Likely**: `[AUDIT_LOG_FLUSH]` operations showing:
+- Frequent flushes (every 2-5 seconds)
+- Batch inserts of 100+ rows
+- Duration increasing over time
+- Potential correlation with I/O spike
+
+**Also Likely**: `[LOG_CLEANUP]` operation showing:
+- Cleanup starts during the 5-10 minute test window
+- Large DELETE operations (>10,000 rows)
+- Duration >1 second
+- Direct correlation with I/O spike
+
+**Less Likely**: Database query performance issues showing:
+- Individual queries taking >50ms
+- Cache misses where hits expected
+- Query volume overwhelming SQLite
+
+### Success Criteria
+
+After reproduction with new logging, we should be able to:
+1. ✅ Identify the exact timestamp when I/O spike begins
+2. ✅ Identify the exact operation executing at that moment
+3. ✅ Measure the duration and frequency of the problematic operation
+4. ✅ Understand why it started in v1.13.0 and not v1.12.3
+5. ✅ Implement a targeted fix for the root cause
+
+---
+
 ## Current Hypotheses
 
 ### Hypothesis A: SQLite WAL Checkpoint
@@ -238,13 +507,14 @@ Add query timing to understand actual database load.
 | File | Change | Commit |
 |------|--------|--------|
 | `server/lib/featureFlags.ts` | Feature flag system | cbe315c2 |
-| `server/db/queries/verifySessionQueries.ts` | DISABLE_SESSION_QUERIES flag | cbe315c2 |
-| `server/routers/badger/logRequestAudit.ts` | DISABLE_AUDIT_LOGGING flag | cbe315c2 |
+| `server/db/queries/verifySessionQueries.ts` | DISABLE_SESSION_QUERIES flag + DB query logging | cbe315c2, 6754a9f1 |
+| `server/routers/badger/logRequestAudit.ts` | DISABLE_AUDIT_LOGGING flag + batch flush logging | cbe315c2, 6754a9f1 |
 | `server/lib/geoip.ts` | DISABLE_GEOIP_LOOKUP flag | cbe315c2 |
 | `server/lib/asn.ts` | DISABLE_ASN_LOOKUP flag | cbe315c2 |
-| `server/routers/badger/verifySession.ts` | DISABLE_RULES_CHECK flag + memory profiler | various |
+| `server/routers/badger/verifySession.ts` | DISABLE_RULES_CHECK flag + request flow logging | various, 6754a9f1 |
 | `server/routers/resource/getResourceAuthInfo.ts` | Added 60-second caching | ede3ae40 |
 | `server/lib/memoryProfiler.ts` | Memory profiling module | 6362ef81 |
+| `server/lib/cleanupLogs.ts` | Added cleanup operation logging | 6754a9f1 |
 
 ---
 
@@ -299,13 +569,15 @@ Investigation commits in chronological order:
 | `ede3ae40` | **Add caching to getResourceAuthInfo (60-second TTL)** |
 | `70140a78` | Update investigation findings document |
 | `96587485` | **Increase resource cache TTL from 5s to 60s** |
-| `99cdbed2` | 🎯 **CRITICAL FIX: Prevent infinite redirect loop in auth flow** |
+| `99cdbed2` | ⚠️ **ATTEMPTED FIX: Prevent infinite redirect loop in auth flow** (Did not fix the issue) |
+| `6754a9f1` | 🔍 **Add comprehensive DEBUG logging for root cause identification** |
 
 **Key commits to reference:**
 - `cbe315c2` - Feature flags: `DISABLE_SESSION_QUERIES`, `DISABLE_AUDIT_LOGGING`, etc.
 - `6362ef81` - Memory profiler logs every 10 seconds
 - `ede3ae40` - getResourceAuthInfo caching fix
-- `99cdbed2` - 🎯 **THE FIX: Redirect loop prevention**
+- `99cdbed2` - ⚠️ **Redirect loop prevention (did not fix the issue)**
+- `6754a9f1` - 🔍 **Comprehensive DEBUG logging to identify root cause**
 
 ---
 
@@ -314,15 +586,29 @@ Investigation commits in chronological order:
 ### ✅ Priority 1: Increase Resource Cache TTL (COMPLETED - Commit 96587485)
 Changed `getResourceByDomain()` cache TTL from 5 seconds to 60 seconds in `server/routers/badger/verifySession.ts`.
 
-### ✅ Priority 2: Fix Redirect Loop (COMPLETED - Commit 99cdbed2)
+### ⚠️ Priority 2: Fix Redirect Loop (COMPLETED BUT DID NOT FIX ISSUE - Commit 99cdbed2)
 Added logic to detect when request path is already `/auth/resource/` and prevent recursive redirect creation.
+**Result**: Problem still persists, redirect loop was not the root cause.
 
-### 🔥 Priority 3: TEST THE FIX!
-Rebuild, redeploy, and run the Synology Photos load test. The redirect loop should now be prevented, and the VPS should remain stable.
+### ✅ Priority 3: Add Comprehensive Logging (COMPLETED - Commit 6754a9f1)
+Added DEBUG logging throughout the application to identify the exact operation causing I/O spikes.
 
-**Expected result**: No exponential URL growth, no memory exhaustion, no disk I/O spike, VPS stays responsive.
+### 🔥 Priority 4: REPRODUCE WITH NEW LOGGING AND ANALYZE
+Rebuild, redeploy, and run the Synology Photos load test with comprehensive logging enabled.
 
-### Priority 4: Monitor Logs During Test
+**During reproduction**:
+1. Monitor logs in real-time: `docker logs -f pangolin 2>&1 | grep -E "\[DB_QUERY\]|\[AUDIT_LOG_FLUSH\]|\[LOG_CLEANUP\]"`
+2. Capture full timeline: `docker logs pangolin 2>&1 --timestamps > full_log.txt`
+3. Note exact timestamp when I/O spike begins
+4. Filter logs around that timestamp to identify the operation
+
+**Expected outcome**: Logs will reveal whether it's:
+- Audit log batch flushes taking too long
+- Log cleanup operations running during test window
+- Database queries performing poorly
+- Cache not working as expected
+
+### Priority 5: Monitor Logs During Test
 ```bash
 # Before test
 docker exec pangolin ls -la /app/db/
