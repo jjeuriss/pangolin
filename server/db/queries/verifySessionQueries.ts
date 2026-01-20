@@ -21,6 +21,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { isFeatureDisabled } from "@server/lib/featureFlags";
 import logger from "@server/logger";
+import cache from "@server/lib/cache";
 
 export type ResourceWithAuth = {
     resource: Resource | null;
@@ -105,6 +106,15 @@ export async function getUserSessionWithUser(
         return null;
     }
 
+    // Check cache first
+    const cacheKey = `session:${userSessionId}`;
+    const cached = cache.get<UserSessionWithUser | null>(cacheKey);
+
+    if (cached !== undefined) {
+        logger.debug(`[DB_QUERY] getUserSessionWithUser CACHE HIT - sessionId=${userSessionId}`);
+        return cached;
+    }
+
     logger.debug(`[DB_QUERY] getUserSessionWithUser START - sessionId=${userSessionId}`);
     const startTime = performance.now();
 
@@ -117,14 +127,16 @@ export async function getUserSessionWithUser(
     const duration = performance.now() - startTime;
     logger.debug(`[DB_QUERY] getUserSessionWithUser END - sessionId=${userSessionId}, duration=${duration.toFixed(2)}ms, found=${!!res}`);
 
-    if (!res) {
-        return null;
-    }
-
-    return {
+    const result = res ? {
         session: res.session,
         user: res.user
-    };
+    } : null;
+
+    // Cache for 60 seconds
+    cache.set(cacheKey, result, 60);
+    logger.debug(`[DB_QUERY] getUserSessionWithUser CACHED - sessionId=${userSessionId}, ttl=60s`);
+
+    return result;
 }
 
 /**
@@ -133,6 +145,15 @@ export async function getUserSessionWithUser(
 export async function getUserOrgRole(userId: string, orgId: string) {
     if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
         return null;
+    }
+
+    // Check cache first
+    const cacheKey = `userOrgRole:${userId}:${orgId}`;
+    const cached = cache.get<any>(cacheKey);
+
+    if (cached !== undefined) {
+        logger.debug(`[DB_QUERY] getUserOrgRole CACHE HIT - userId=${userId}, orgId=${orgId}`);
+        return cached;
     }
 
     logger.debug(`[DB_QUERY] getUserOrgRole START - userId=${userId}, orgId=${orgId}`);
@@ -147,7 +168,13 @@ export async function getUserOrgRole(userId: string, orgId: string) {
     const duration = performance.now() - startTime;
     logger.debug(`[DB_QUERY] getUserOrgRole END - userId=${userId}, orgId=${orgId}, duration=${duration.toFixed(2)}ms, found=${userOrgRole.length > 0}`);
 
-    return userOrgRole.length > 0 ? userOrgRole[0] : null;
+    const result = userOrgRole.length > 0 ? userOrgRole[0] : null;
+
+    // Cache for 60 seconds
+    cache.set(cacheKey, result, 60);
+    logger.debug(`[DB_QUERY] getUserOrgRole CACHED - userId=${userId}, orgId=${orgId}, ttl=60s`);
+
+    return result;
 }
 
 /**
@@ -159,6 +186,15 @@ export async function getRoleResourceAccess(
 ) {
     if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
         return null;
+    }
+
+    // Check cache first
+    const cacheKey = `roleResourceAccess:${resourceId}:${roleId}`;
+    const cached = cache.get<any>(cacheKey);
+
+    if (cached !== undefined) {
+        logger.debug(`[DB_QUERY] getRoleResourceAccess CACHE HIT - resourceId=${resourceId}, roleId=${roleId}`);
+        return cached;
     }
 
     logger.debug(`[DB_QUERY] getRoleResourceAccess START - resourceId=${resourceId}, roleId=${roleId}`);
@@ -178,7 +214,13 @@ export async function getRoleResourceAccess(
     const duration = performance.now() - startTime;
     logger.debug(`[DB_QUERY] getRoleResourceAccess END - resourceId=${resourceId}, roleId=${roleId}, duration=${duration.toFixed(2)}ms, found=${roleResourceAccess.length > 0}`);
 
-    return roleResourceAccess.length > 0 ? roleResourceAccess[0] : null;
+    const result = roleResourceAccess.length > 0 ? roleResourceAccess[0] : null;
+
+    // Cache for 60 seconds
+    cache.set(cacheKey, result, 60);
+    logger.debug(`[DB_QUERY] getRoleResourceAccess CACHED - resourceId=${resourceId}, roleId=${roleId}, ttl=60s`);
+
+    return result;
 }
 
 /**
@@ -190,6 +232,15 @@ export async function getUserResourceAccess(
 ) {
     if (isFeatureDisabled("DISABLE_SESSION_QUERIES")) {
         return null;
+    }
+
+    // Check cache first
+    const cacheKey = `userResourceAccess:${userId}:${resourceId}`;
+    const cached = cache.get<any>(cacheKey);
+
+    if (cached !== undefined) {
+        logger.debug(`[DB_QUERY] getUserResourceAccess CACHE HIT - userId=${userId}, resourceId=${resourceId}`);
+        return cached;
     }
 
     logger.debug(`[DB_QUERY] getUserResourceAccess START - userId=${userId}, resourceId=${resourceId}`);
@@ -209,7 +260,13 @@ export async function getUserResourceAccess(
     const duration = performance.now() - startTime;
     logger.debug(`[DB_QUERY] getUserResourceAccess END - userId=${userId}, resourceId=${resourceId}, duration=${duration.toFixed(2)}ms, found=${userResourceAccess.length > 0}`);
 
-    return userResourceAccess.length > 0 ? userResourceAccess[0] : null;
+    const result = userResourceAccess.length > 0 ? userResourceAccess[0] : null;
+
+    // Cache for 60 seconds
+    cache.set(cacheKey, result, 60);
+    logger.debug(`[DB_QUERY] getUserResourceAccess CACHED - userId=${userId}, resourceId=${resourceId}, ttl=60s`);
+
+    return result;
 }
 
 /**
