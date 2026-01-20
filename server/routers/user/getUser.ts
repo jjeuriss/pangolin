@@ -9,6 +9,9 @@ import createHttpError from "http-errors";
 import logger from "@server/logger";
 import cache from "@server/lib/cache";
 
+// BUILD VERIFICATION: commit a5932f95 - Server-side caching for /api/v1/user endpoint (2026-01-20)
+logger.info("[BUILD_VERIFICATION] getUser.ts loaded with server-side caching (commit a5932f95, 2026-01-20)");
+
 async function queryUser(userId: string) {
     logger.debug(`[GET_USER] Querying database for userId=${userId}`);
     const startTime = performance.now();
